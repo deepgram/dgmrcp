@@ -1,0 +1,14 @@
+[package]
+name = "dgmrcp"
+version = "0.1.0"
+authors = ["Adam Sypniewski <ajsyp@syptech.net>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Dependencies for building the C library.
+[build-dependencies]
+bindgen = "0.50.0"
+
+[dependencies]
