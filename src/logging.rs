@@ -7,6 +7,7 @@ const LOG_NAME: &str = "DG-ASR";
 #[macro_export]
 macro_rules! log {
     ( $priority:expr, $( $x:expr ),* ) => {
+        #[allow(unused_unsafe)]
         unsafe {
             use std::ffi::CString;
             ffi::apt_log(

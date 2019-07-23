@@ -29,13 +29,13 @@ pub mod utils;
 #[macro_use]
 pub mod logging;
 pub mod channel;
-pub mod pool;
-pub mod request;
 pub mod codec;
-pub mod stream;
-pub mod frame;
 pub mod error;
+pub mod frame;
 pub mod helper;
+pub mod message;
+pub mod pool;
+pub mod stream;
 
 /// Import the MRCP Engine bindings.
 pub mod ffi {
@@ -64,7 +64,8 @@ pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mr
     let mut pool = pool.into();
     unsafe {
         let engine = Box::into_raw(
-            engine::Engine::alloc(&mut pool).expect("Failed to allocate the Deepgram MRCP engine/plugin.")
+            engine::Engine::alloc(&mut pool)
+                .expect("Failed to allocate the Deepgram MRCP engine/plugin."),
         );
         ffi::mrcp_engine_create(
             ffi::mrcp_resource_type_e::MRCP_RECOGNIZER_RESOURCE as usize,
@@ -73,5 +74,5 @@ pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mr
             pool.get(),
         )
     }
-//    engine::Engine::new(&mut pool.into()).into_inner()
+    //    engine::Engine::new(&mut pool.into()).into_inner()
 }
