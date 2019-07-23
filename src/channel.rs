@@ -7,7 +7,7 @@ use std::ptr;
 
 #[repr(C)]
 pub struct Channel {
-    pub demo_engine: Option<*mut Engine>,
+    pub engine: Option<*mut Engine>,
     pub channel: Option<*mut ffi::mrcp_engine_channel_t>,
     pub recog_request: Option<*mut ffi::mrcp_message_t>,
     pub stop_response: Option<*mut ffi::mrcp_message_t>,
@@ -22,7 +22,7 @@ impl Channel {
     ) -> Result<Box<Channel>, Error> {
         info!("Constructing a Deepgram ASR Engine Channel.");
         let src = Self {
-            demo_engine: Some(unsafe { (*engine).obj as *mut _ }),
+            engine: Some(unsafe { (*engine).obj as *mut _ }),
             recog_request: None,
             stop_response: None,
             detector: Some(unsafe { ffi::mpf_activity_detector_create(pool.get()) }),
@@ -123,7 +123,6 @@ impl Channel {
         }
 
         if cause == ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS {
-            //demo_recog_result_load
             unsafe {
                 let body = CString::new(
                     br#"<?xml version="1.0"?>
@@ -185,48 +184,48 @@ unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) 
 
 unsafe extern "C" fn channel_open(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Openinging Deepgram ASR channel.");
-    demo_recog_msg_signal(MessageType::Open, channel, ptr::null_mut())
+    msg_signal(MessageType::Open, channel, ptr::null_mut())
 }
 
 unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Closing Deepgram ASR channel.");
-    demo_recog_msg_signal(MessageType::Close, channel, ptr::null_mut())
+    msg_signal(MessageType::Close, channel, ptr::null_mut())
 }
 
 unsafe extern "C" fn channel_process_request(
     channel: *mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
-    demo_recog_msg_signal(MessageType::RequestProcess, channel, request)
+    msg_signal(MessageType::RequestProcess, channel, request)
 }
 
-unsafe fn demo_recog_msg_signal(
+unsafe fn msg_signal(
     message_type: MessageType,
-    channel: *mut ffi::mrcp_engine_channel_t,
+    channel_ptr: *mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
     debug!("Message signal: {:?}", message_type);
-    let demo_channel = Box::from_raw((*channel).method_obj as *mut Channel);
-    let demo_engine = demo_channel.demo_engine.unwrap();
-    let task = ffi::apt_consumer_task_base_get((*demo_engine).task.unwrap());
-    let msg = ffi::apt_task_msg_get(task);
-    let r = if !msg.is_null() {
-        (*msg).type_ = ffi::apt_task_msg_type_e::TASK_MSG_USER as i32;
+    let channel = Box::from_raw((*channel_ptr).method_obj as *mut Channel);
+    let engine = channel.engine.unwrap();
+    let task = ffi::apt_consumer_task_base_get((*engine).task.unwrap());
+    let msg_ptr = ffi::apt_task_msg_get(task);
+    let r = if !msg_ptr.is_null() {
+        (*msg_ptr).type_ = ffi::apt_task_msg_type_e::TASK_MSG_USER as i32;
         #[allow(clippy::cast_ptr_alignment)]
-        let mut demo_msg = Box::from_raw(&mut (*msg).data as *mut _ as *mut Message);
-        demo_msg.message_type = message_type;
-        demo_msg.channel = channel;
-        demo_msg.request = request;
-        Box::into_raw(demo_msg);
-        ffi::apt_task_msg_signal(task, msg)
+        let mut msg = Box::from_raw(&mut (*msg_ptr).data as *mut _ as *mut Message);
+        msg.message_type = message_type;
+        msg.channel = channel_ptr;
+        msg.request = request;
+        Box::into_raw(msg);
+        ffi::apt_task_msg_signal(task, msg_ptr)
     } else {
         ffi::FALSE as i32
     };
-    Box::into_raw(demo_channel);
+    Box::into_raw(channel);
     r
 }
 
-pub(crate) unsafe fn demo_recog_channel_recognize(
+pub(crate) unsafe fn recognize_channel(
     channel: *mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
     response: *mut ffi::mrcp_message_t,

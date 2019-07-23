@@ -1,5 +1,5 @@
 use crate::{
-    channel::{demo_recog_channel_recognize, Channel},
+    channel::{recognize_channel, Channel},
     ffi,
     helper::*,
 };
@@ -18,7 +18,7 @@ pub struct Message {
     pub request: *mut ffi::mrcp_message_t,
 }
 
-pub(crate) unsafe fn demo_recog_channel_request_dispatch(
+pub(crate) unsafe fn dispatch_request(
     channel: *mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
@@ -26,7 +26,7 @@ pub(crate) unsafe fn demo_recog_channel_request_dispatch(
     let response = ffi::mrcp_response_create(request, (*request).pool);
     let processed = match ((*request).start_line).method_id as u32 {
         ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => {
-            demo_recog_channel_recognize(channel, request, response) != 0
+            recognize_channel(channel, request, response) != 0
         }
         ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
             {

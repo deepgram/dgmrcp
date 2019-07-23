@@ -122,21 +122,24 @@ unsafe extern "C" fn msg_process(
     msg: *mut ffi::apt_task_msg_t,
 ) -> ffi::apt_bool_t {
     debug!("Message processing...");
+
+    // Encapsulate the message payload.
     #[allow(clippy::cast_ptr_alignment)]
-    let demo_msg = Box::from_raw(&mut (*msg).data as *mut _ as *mut Message);
-    match demo_msg.message_type {
+    let msg = Box::from_raw(&mut (*msg).data as *mut _ as *mut Message);
+
+    match msg.message_type {
         MessageType::Open => {
-            mrcp_engine_channel_open_respond(demo_msg.channel, ffi::TRUE);
+            mrcp_engine_channel_open_respond(msg.channel, ffi::TRUE);
         }
         MessageType::Close => {
-            let channel = Box::from_raw((*(*demo_msg).channel).method_obj as *mut Channel);
-            mrcp_engine_channel_close_respond(demo_msg.channel);
+            let channel = Box::from_raw((*(*msg).channel).method_obj as *mut Channel);
+            mrcp_engine_channel_close_respond(msg.channel);
             Box::into_raw(channel);
         }
         MessageType::RequestProcess => {
-            demo_recog_channel_request_dispatch(demo_msg.channel, demo_msg.request);
+            dispatch_request(msg.channel, msg.request);
         }
     }
-    Box::into_raw(demo_msg);
+    Box::into_raw(msg);
     ffi::TRUE
 }
