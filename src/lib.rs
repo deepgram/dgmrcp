@@ -26,8 +26,6 @@
 
 pub mod engine;
 pub mod utils;
-#[macro_use]
-pub mod logging;
 pub mod channel;
 pub mod codec;
 pub mod error;
@@ -35,7 +33,11 @@ pub mod frame;
 pub mod helper;
 pub mod message;
 pub mod pool;
+pub mod runtime;
 pub mod stream;
+
+#[macro_use]
+pub mod logging;
 
 /// Import the MRCP Engine bindings.
 pub mod ffi {

@@ -14,6 +14,9 @@ fn output() -> PathBuf {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=native/dgmrcp.h");
+    println!("cargo:rerun-if-env-changed=MRCP_INCLUDE_PATH");
+
     let mut includes = env::var("MRCP_INCLUDE_PATH")
         .map(|x| {
             x.split(':')
