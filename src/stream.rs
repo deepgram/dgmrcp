@@ -1,6 +1,8 @@
 use crate::{channel::Channel, codec::Codec, ffi, frame::Frame, helper::*};
 use std::mem::ManuallyDrop;
 
+use crate::{debug};
+
 /// Define the engine v-table
 pub static STREAM_VTABLE: ffi::mpf_audio_stream_vtable_t = ffi::mpf_audio_stream_vtable_t {
     destroy: Some(stream_destroy),
