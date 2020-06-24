@@ -5,8 +5,6 @@ use crate::{
 };
 use std::mem;
 
-use crate::{debug};
-
 #[derive(Debug, Copy, Clone)]
 pub enum MessageType {
     Open,

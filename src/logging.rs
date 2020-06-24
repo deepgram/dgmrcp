@@ -1,70 +1,55 @@
 use crate::{ffi, utils::cell::RacyUnsafeCell};
 use std::ffi::CString;
 
+pub struct Logger;
+
 const LOG_NAME: &str = "DG-ASR";
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! log {
-    ( $priority:expr, $( $x:expr ),* ) => {
-        #[allow(unused_unsafe)]
-        unsafe {
-            use std::ffi::CString;
-            ffi::apt_log(
-                *$crate::logging::RECOG_PLUGIN.get(),
-                CString::new(file!()).unwrap().as_ptr(),
-                line!() as i32,
-                $priority,
-                CString::new(format!($( $x ), *)).unwrap().as_ptr(),
-            )
+impl log::Log for Logger {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(&record.metadata()) {
+            unsafe {
+                use crate::ffi::apt_log_priority_e::*;
+                let priority = match record.level() {
+                    log::Level::Error => APT_PRIO_ERROR,
+                    log::Level::Warn => APT_PRIO_WARNING,
+                    log::Level::Info => APT_PRIO_NOTICE,
+                    log::Level::Debug => APT_PRIO_INFO,
+                    log::Level::Trace => APT_PRIO_DEBUG,
+                };
+
+                let file = CString::new(record.file().unwrap_or("")).unwrap();
+                let format = CString::new(format!("[DG :: {}] {}", record.target(), record.args())).unwrap();
+
+                ffi::apt_log(
+                    *RECOG_PLUGIN.get(),
+                    file.as_ptr(),
+                    record.line().unwrap_or(0) as i32,
+                    priority,
+                    format.as_ptr(),
+                );
+            }
         }
     }
-}
 
-#[macro_export]
-macro_rules! trace {
-    ( $( $x:expr ),* ) => {
-        $crate::log!($crate::ffi::apt_log_priority_e::APT_PRIO_DEBUG, $( $x ), *)
-    }
-}
-
-#[macro_export]
-macro_rules! debug {
-    ( $( $x:expr ),* ) => {
-        $crate::log!($crate::ffi::apt_log_priority_e::APT_PRIO_INFO, $( $x ), *)
-    }
-}
-
-#[macro_export]
-macro_rules! info {
-    ( $( $x:expr ),* ) => {
-        $crate::log!($crate::ffi::apt_log_priority_e::APT_PRIO_NOTICE, $( $x ), *)
-    }
-}
-
-#[macro_export]
-macro_rules! warn {
-    ( $( $x:expr ),* ) => {
-        $crate::log!($crate::ffi::apt_log_priority_e::APT_PRIO_WARNING, $( $x ), *)
-    }
-}
-
-#[macro_export]
-macro_rules! error {
-    ( $( $x:expr ),* ) => {
-        $crate::log!($crate::ffi::apt_log_priority_e::APT_PRIO_ERROR, $( $x ), *)
-    }
+    fn flush(&self) {}
 }
 
 /// The functional equivalent of `MRCP_PLUGIN_LOG_SOURCE_IMPLEMENT`.
 #[no_mangle]
 pub static RECOG_PLUGIN: RacyUnsafeCell<*mut ffi::apt_log_source_t> =
     unsafe { RacyUnsafeCell::new(&ffi::def_log_source as *const _ as *mut _) };
+
 #[no_mangle]
 pub unsafe extern "C" fn mrcp_plugin_logger_set(logger: *mut ffi::apt_logger_t) -> ffi::apt_bool_t {
     ffi::apt_log_instance_set(logger);
     ffi::TRUE
 }
+
 #[no_mangle]
 pub unsafe extern "C" fn mrcp_plugin_log_source_set(orig_log_source: *mut ffi::apt_log_source_t) {
     let name = CString::new(LOG_NAME).unwrap();

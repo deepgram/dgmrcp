@@ -24,20 +24,21 @@
 //! 6787](https://tools.ietf.org/html/rfc6787#section-9.6.3.3) for more
 //! details.
 
-pub mod engine;
-pub mod utils;
+#[macro_use]
+extern crate log;
+
 pub mod channel;
 pub mod codec;
+pub mod engine;
 pub mod error;
 pub mod frame;
 pub mod helper;
+pub mod logging;
 pub mod message;
 pub mod pool;
 pub mod runtime;
 pub mod stream;
-
-#[macro_use]
-pub mod logging;
+pub mod utils;
 
 /// Import the MRCP Engine bindings.
 pub mod ffi {
@@ -63,6 +64,13 @@ pub static mut mrcp_plugin_version: ffi::mrcp_plugin_version_t = ffi::mrcp_plugi
 /// Create the engine.
 #[no_mangle]
 pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mrcp_engine_t {
+    // Initialize a logging backend that forwards to UniMRCP's logging
+    // framework.
+    match log::set_logger(&logging::Logger) {
+        Err(err) => eprintln!("FAILED TO SET LOGGER: {}", err),
+        Ok(()) => log::set_max_level(log::LevelFilter::max()),
+    }
+
     let mut pool = pool.into();
     unsafe {
         let engine = Box::into_raw(

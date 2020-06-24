@@ -1,4 +1,4 @@
-use crate::{channel::Channel, debug, error::Error, ffi, helper::*, info, message::*, pool::Pool};
+use crate::{channel::Channel, error::Error, ffi, helper::*, message::*, pool::Pool};
 use std::ffi::CStr;
 use std::mem;
 
