@@ -1,38 +1,40 @@
 use crate::{
-    engine::Engine, error::Error, ffi, helper::*, message::*, pool::Pool, stream::STREAM_VTABLE,
+    engine::Engine, error::Error, ffi, helper::*, message::*, pool::Pool, stem::StreamingResponse,
+    stream::STREAM_VTABLE,
 };
-use std::ffi::{CStr, CString};
-use std::mem;
-use std::ptr;
+use std::{
+    ffi::{CStr, CString},
+    mem, ptr,
+};
+use tokio::sync::mpsc;
 
 #[repr(C)]
 pub struct Channel {
-    pub engine: Option<*mut Engine>,
-    pub channel: Option<*mut ffi::mrcp_engine_channel_t>,
+    pub engine: *mut Engine,
+    pub channel: *mut ffi::mrcp_engine_channel_t,
     pub recog_request: Option<*mut ffi::mrcp_message_t>,
     pub stop_response: Option<*mut ffi::mrcp_message_t>,
     pub timers_started: ffi::apt_bool_t,
     pub detector: Option<*mut ffi::mpf_activity_detector_t>,
+    pub sink: Option<mpsc::Sender<tungstenite::Message>>,
 }
 
 impl Channel {
     pub(crate) fn alloc(
         engine: *mut ffi::mrcp_engine_t,
         pool: &mut Pool,
-    ) -> Result<Box<Channel>, Error> {
+    ) -> Result<*mut ffi::mrcp_engine_channel_t, Error> {
         info!("Constructing a Deepgram ASR Engine Channel.");
-        let src = Self {
-            engine: Some(unsafe { (*engine).obj as *mut _ }),
+        let data = Self {
+            engine: unsafe { *engine }.obj as *mut _,
             recog_request: None,
             stop_response: None,
             detector: Some(unsafe { ffi::mpf_activity_detector_create(pool.get()) }),
             timers_started: ffi::FALSE as i32,
-            channel: None,
+            channel: ptr::null_mut(),
+            sink: None,
         };
-        let ptr: *mut Self =
-            unsafe { ffi::apr_palloc(pool.get(), mem::size_of::<Self>()) as *mut _ };
-        unsafe { ptr.copy_from_nonoverlapping(&src as *const _, 1) };
-        mem::forget(src);
+        let data = pool.palloc(data);
 
         let caps = unsafe { mpf_sink_stream_capabilities_create(pool.get()) };
         let codec: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"LPCM\0") };
@@ -47,24 +49,28 @@ impl Channel {
 
         let termination = unsafe {
             ffi::mrcp_engine_audio_termination_create(
-                ptr as *mut _,
+                data as *mut _,
                 &STREAM_VTABLE,
                 caps,
                 pool.get(),
             )
         };
 
-        unsafe {
-            (*ptr).channel = Some(ffi::mrcp_engine_channel_create(
+        let channel = unsafe {
+            ffi::mrcp_engine_channel_create(
                 engine,
                 &CHANNEL_VTABLE,
-                ptr as *mut _,
+                data as *mut _,
                 termination,
                 pool.get(),
-            ));
+            )
+        };
+
+        unsafe {
+            (*data).channel = channel;
         }
 
-        Ok(unsafe { Box::from_raw(ptr) })
+        Ok(channel)
     }
 
     pub fn start_of_input(&mut self) -> bool {
@@ -83,9 +89,30 @@ impl Channel {
             unsafe {
                 (*message).start_line.request_state =
                     ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
-                mrcp_engine_channel_message_send(self.channel.unwrap(), message) != 0
+                mrcp_engine_channel_message_send(self.channel, message) != 0
             }
         }
+    }
+
+    pub fn results_available(&mut self, response: StreamingResponse) {
+        info!(
+            "Results available (FINAL={}): {}",
+            response.is_final,
+            response
+                .channel
+                .alternatives
+                .get(0)
+                .map(|alt| alt.transcript.as_str())
+                .unwrap_or("<< NO RESULTS >>")
+        );
+
+        let message = unsafe {
+            ffi::mrcp_event_create(
+                self.recog_request.unwrap() as *const _,
+                ffi::mrcp_recognizer_event_id::RECOGNIZER_RECOGNITION_COMPLETE as usize,
+                (*self.recog_request.unwrap()).pool,
+            )
+        };
     }
 
     pub fn recognition_complete(
@@ -93,6 +120,7 @@ impl Channel {
         cause: ffi::mrcp_recog_completion_cause_e::Type,
     ) -> bool {
         debug!("Recognition complete.");
+
         let message = unsafe {
             ffi::mrcp_event_create(
                 self.recog_request.unwrap() as *const _,
@@ -164,7 +192,7 @@ impl Channel {
 
         self.recog_request.take();
 
-        unsafe { mrcp_engine_channel_message_send(self.channel.unwrap(), message) != 0 }
+        unsafe { mrcp_engine_channel_message_send(self.channel, message) != 0 }
     }
 }
 
@@ -183,12 +211,19 @@ unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) 
 }
 
 unsafe extern "C" fn channel_open(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
-    debug!("Openinging Deepgram ASR channel.");
-    msg_signal(MessageType::Open, channel, ptr::null_mut())
+    debug!("Opening Deepgram ASR channel.");
+    let (tx, rx) = mpsc::channel(8);
+    let channel_data = &mut *((*channel).method_obj as *mut Channel);
+    channel_data.sink = Some(tx);
+    msg_signal(MessageType::Open { rx }, channel, ptr::null_mut())
 }
 
 unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Closing Deepgram ASR channel.");
+
+    let channel_data = &mut *((*channel).method_obj as *mut Channel);
+    channel_data.sink.take();
+
     msg_signal(MessageType::Close, channel, ptr::null_mut())
 }
 
@@ -205,24 +240,30 @@ unsafe fn msg_signal(
     request: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
     debug!("Message signal: {:?}", message_type);
-    let channel = Box::from_raw((*channel_ptr).method_obj as *mut Channel);
-    let engine = channel.engine.unwrap();
+    let channel = &mut *((*channel_ptr).method_obj as *mut Channel);
+    let engine = channel.engine;
     let task = ffi::apt_consumer_task_base_get((*engine).task.unwrap());
     let msg_ptr = ffi::apt_task_msg_get(task);
-    let r = if !msg_ptr.is_null() {
-        (*msg_ptr).type_ = ffi::apt_task_msg_type_e::TASK_MSG_USER as i32;
-        #[allow(clippy::cast_ptr_alignment)]
-        let mut msg = Box::from_raw(&mut (*msg_ptr).data as *mut _ as *mut Message);
-        msg.message_type = message_type;
-        msg.channel = channel_ptr;
-        msg.request = request;
-        Box::into_raw(msg);
+    if !msg_ptr.is_null() {
+        let msg = &mut (*msg_ptr).data as *mut _ as *mut Message;
+        std::ptr::write(
+            msg,
+            Message {
+                message_type,
+                channel: channel_ptr,
+                request,
+            },
+        );
+
+        // (*msg_ptr).type_ = ffi::apt_task_msg_type_e::TASK_MSG_USER as i32;
+        // let mut msg = &mut *(&mut (*msg_ptr).data as *mut _ as *mut Message);
+        // msg.message_type = message_type;
+        // msg.channel = channel_ptr;
+        // msg.request = request;
         ffi::apt_task_msg_signal(task, msg_ptr)
     } else {
         ffi::FALSE as i32
-    };
-    Box::into_raw(channel);
-    r
+    }
 }
 
 pub(crate) unsafe fn recognize_channel(
@@ -231,6 +272,7 @@ pub(crate) unsafe fn recognize_channel(
     response: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
     debug!("Channel recognize.");
+    // TODO: Get rid of manually drop
     let mut recog_channel =
         mem::ManuallyDrop::new(Box::from_raw((*channel).method_obj as *mut Channel));
     let descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
@@ -280,3 +322,19 @@ pub(crate) unsafe fn recognize_channel(
     recog_channel.recog_request = Some(request);
     ffi::TRUE
 }
+
+// #[derive(Serialize)]
+// struct Response {
+//     result: RecognizerResult,
+// }
+
+// #[derive(Serialize)]
+// struct RecognizerResult {
+//     interpretation: Interpretation,
+// }
+
+// #[derive(Serialize)]
+// struct Interpretation {
+//     instance: String,
+//     input: String,
+// }

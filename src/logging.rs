@@ -23,7 +23,8 @@ impl log::Log for Logger {
                 };
 
                 let file = CString::new(record.file().unwrap_or("")).unwrap();
-                let format = CString::new(format!("[DG :: {}] {}", record.target(), record.args())).unwrap();
+                let format =
+                    CString::new(format!("[DG :: {}] {}", record.target(), record.args())).unwrap();
 
                 ffi::apt_log(
                     *RECOG_PLUGIN.get(),

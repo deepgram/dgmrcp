@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 /// Where our native code is stored.
 fn native() -> PathBuf {
+    // TODO: I think this should come from a cargo env var.
     let mut absolute = env::current_dir().unwrap();
     absolute.push("native");
     absolute

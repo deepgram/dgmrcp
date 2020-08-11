@@ -1,17 +1,13 @@
-use std::error::Error as StdError;
-use std::fmt;
-
 /// Error type for all error produced by this crate.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Failed to create the engine.
+    #[error("Initialization")]
     Initialization,
-}
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
+    #[error("Request failed: {0}")]
+    Request(#[from] reqwest::Error),
 
-impl StdError for Error {}
+    #[error("Bad URL: {0}")]
+    BadUrl(#[from] url::ParseError),
+}

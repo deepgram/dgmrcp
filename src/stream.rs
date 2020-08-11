@@ -1,5 +1,4 @@
 use crate::{channel::Channel, codec::Codec, ffi, frame::Frame, helper::*};
-use std::mem::ManuallyDrop;
 
 /// Define the engine v-table
 pub static STREAM_VTABLE: ffi::mpf_audio_stream_vtable_t = ffi::mpf_audio_stream_vtable_t {
@@ -14,6 +13,7 @@ pub static STREAM_VTABLE: ffi::mpf_audio_stream_vtable_t = ffi::mpf_audio_stream
 };
 
 unsafe extern "C" fn stream_destroy(stream: *mut ffi::mpf_audio_stream_t) -> ffi::apt_bool_t {
+    info!("stream_destroy");
     Stream::wrap(stream).destroy();
     ffi::TRUE
 }
@@ -22,10 +22,12 @@ unsafe extern "C" fn stream_open(
     stream: *mut ffi::mpf_audio_stream_t,
     codec: *mut ffi::mpf_codec_t,
 ) -> ffi::apt_bool_t {
+    info!("stream_open");
     Stream::wrap(stream).open(&mut codec.into()) as ffi::apt_bool_t
 }
 
 unsafe extern "C" fn stream_close(stream: *mut ffi::mpf_audio_stream_t) -> ffi::apt_bool_t {
+    info!("stream_close");
     Stream::wrap(stream).close() as ffi::apt_bool_t
 }
 
@@ -59,7 +61,9 @@ impl Stream {
     }
 
     fn open(&mut self, _codec: &mut Codec) -> bool {
-        debug!("Opening a Deepgram ASR Stream.");
+        debug!("Opening a Deepgram ASR Stream; direction = {:x}", unsafe {
+            (*self.0).direction
+        });
         true
     }
 
@@ -69,13 +73,19 @@ impl Stream {
     }
 
     fn write(&mut self, frame: &mut Frame) -> bool {
-        debug!("Writing to stream.");
-        let mut recog_channel =
-            ManuallyDrop::new(unsafe { Box::from_raw((*self.0).obj as *mut Channel) });
+        // if frame.get().type_ == 0 {
+        //     // warn!("frame type == NONE; skipping");
+        //     return true;
+        // }
+
+        trace!("write :: frame.type={}", frame.get().type_);
+
+        let recog_channel = unsafe { &mut *((*self.0).obj as *mut Channel) };
+
+        // TODO: What is this for?
         if let Some(stop_response) = recog_channel.stop_response.take() {
-            unsafe {
-                mrcp_engine_channel_message_send(recog_channel.channel.unwrap(), stop_response)
-            };
+            debug!("Received stop response");
+            unsafe { mrcp_engine_channel_message_send(recog_channel.channel, stop_response) };
             recog_channel.recog_request.take();
             return true;
         }
@@ -100,26 +110,37 @@ impl Stream {
                         recog_channel.recognition_complete(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
                     }
                 }
-                _ => (),
+                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
+                event => warn!("unhandled event type: {}", event),
             }
 
-            if let Some(_recog_request) = recog_channel.recog_request {
-                if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)
-                    == ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32
+            if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)
+                == ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32
+            {
+                if frame.get().marker == ffi::mpf_frame_marker_e::MPF_MARKER_START_OF_EVENT as i32 {
+                    debug!("Detected start of event.");
+                } else if frame.get().marker
+                    == ffi::mpf_frame_marker_e::MPF_MARKER_END_OF_EVENT as i32
                 {
-                    if frame.get().marker
-                        == ffi::mpf_frame_marker_e::MPF_MARKER_START_OF_EVENT as i32
-                    {
-                        debug!("Detected start of event.");
-                    } else if frame.get().marker
-                        == ffi::mpf_frame_marker_e::MPF_MARKER_END_OF_EVENT as i32
-                    {
-                        debug!("Detected start of event.");
-                    }
+                    debug!("Detected end of event.");
                 }
             }
 
-            debug!("Received {} bytes of audio.", frame.get().codec_frame.size);
+            if frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_AUDIO as i32 != 0 {
+                trace!("Received {} bytes of audio.", frame.get().codec_frame.size);
+
+                let handle = unsafe { (*(*recog_channel).engine).runtime_handle.as_ref() }
+                    .unwrap()
+                    .clone();
+                let sink = recog_channel.sink.as_mut().unwrap();
+                let message = tungstenite::Message::binary(frame.codec_frame());
+                if let Err(err) = handle.block_on(sink.send(message)) {
+                    error!("failed to send buffer: {}", err);
+                    return false;
+                }
+            }
+        } else {
+            warn!("no active recog request");
         }
         true
     }

@@ -29,6 +29,7 @@ extern crate log;
 
 pub mod channel;
 pub mod codec;
+pub mod config;
 pub mod engine;
 pub mod error;
 pub mod frame;
@@ -36,6 +37,7 @@ pub mod helper;
 pub mod logging;
 pub mod message;
 pub mod pool;
+pub mod stem;
 pub mod stream;
 pub mod utils;
 
@@ -71,11 +73,16 @@ pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mr
     }
 
     let mut pool = pool.into();
+
+    let engine = match engine::Engine::alloc(&mut pool) {
+        Ok(engine) => engine,
+        Err(err) => {
+            error!("{}", err);
+            return std::ptr::null_mut();
+        }
+    };
+
     unsafe {
-        let engine = Box::into_raw(
-            engine::Engine::alloc(&mut pool)
-                .expect("Failed to allocate the Deepgram MRCP engine/plugin."),
-        );
         ffi::mrcp_engine_create(
             ffi::mrcp_resource_type_e::MRCP_RECOGNIZER_RESOURCE as usize,
             engine as *mut _,
@@ -83,5 +90,4 @@ pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mr
             pool.get(),
         )
     }
-    //    engine::Engine::new(&mut pool.into()).into_inner()
 }
