@@ -28,7 +28,7 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
             return mrcp_engine_open_respond(engine, ffi::FALSE as i32);
         }
     };
-    debug!("Parsed {:?}", config);
+    debug!("Parsed engine configuration");
 
     let response = match Engine::map(engine, |engine| engine.open(config)) {
         Ok(()) => ffi::TRUE,
