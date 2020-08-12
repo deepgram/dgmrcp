@@ -379,7 +379,22 @@ unsafe extern "C" fn channel_open(channel: *mut ffi::mrcp_engine_channel_t) -> f
     let (tx, rx) = mpsc::channel(8);
     let channel_data = &mut *((*channel).method_obj as *mut Channel);
     channel_data.sink = Some(tx);
-    msg_signal(MessageType::Open { rx }, channel, ptr::null_mut())
+
+    let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
+    if codec_descriptor.is_null() {
+        error!("Failed to get codec descriptor");
+        return ffi::FALSE as ffi::apt_bool_t;
+    }
+
+    msg_signal(
+        MessageType::Open {
+            rx,
+            sample_rate: (*codec_descriptor).sampling_rate,
+            channels: (*codec_descriptor).channel_count,
+        },
+        channel,
+        ptr::null_mut(),
+    )
 }
 
 unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {

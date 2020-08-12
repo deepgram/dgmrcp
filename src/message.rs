@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 pub enum MessageType {
     Open {
         rx: mpsc::Receiver<tungstenite::Message>,
+        sample_rate: u16,
+        channels: u8,
     },
     Close,
     RequestProcess,

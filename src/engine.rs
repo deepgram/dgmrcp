@@ -242,7 +242,11 @@ impl TaskData {
 
     fn process_message(&self, msg: Message) {
         match msg.message_type {
-            MessageType::Open { rx } => {
+            MessageType::Open {
+                rx,
+                sample_rate,
+                channels,
+            } => {
                 let config = self.config();
 
                 let auth = format!("{}:{}", config.brain_username, config.brain_password);
@@ -252,7 +256,8 @@ impl TaskData {
                 url.query_pairs_mut()
                     .append_pair("interim_results", "false")
                     .append_pair("encoding", "linear16")
-                    .append_pair("sample_rate", "16000");
+                    .append_pair("sample_rate", &sample_rate.to_string())
+                    .append_pair("channels", &channels.to_string());
 
                 info!("Building request to {}", url);
 
