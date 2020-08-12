@@ -30,3 +30,13 @@ pub struct Word {
     pub end: f32,
     pub confidence: f32,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct Summary {
+    pub transaction_key: String,
+    pub request_id: String,
+    pub sha256: String,
+    pub created: String,
+    pub duration: f32,
+    pub channels: u16,
+}

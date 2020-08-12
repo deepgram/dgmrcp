@@ -73,11 +73,6 @@ impl Stream {
     }
 
     fn write(&mut self, frame: &mut Frame) -> bool {
-        // if frame.get().type_ == 0 {
-        //     // warn!("frame type == NONE; skipping");
-        //     return true;
-        // }
-
         trace!("write :: frame.type={}", frame.get().type_);
 
         let recog_channel = unsafe { &mut *((*self.0).obj as *mut Channel) };
@@ -90,58 +85,59 @@ impl Stream {
             return true;
         }
 
-        if let Some(_recog_request) = recog_channel.recog_request {
-            match unsafe {
-                ffi::mpf_activity_detector_process(recog_channel.detector.unwrap(), frame.get())
-            } {
-                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
-                    debug!("Detected voice activity.");
-                    recog_channel.start_of_input();
-                }
-                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
-                    debug!("Detected voice inactivity.");
-                    recog_channel.recognition_complete(
-                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                    );
-                }
-                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
-                    debug!("Detected no input.");
-                    if recog_channel.timers_started == ffi::TRUE {
-                        recog_channel.recognition_complete(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
-                    }
-                }
-                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
-                event => warn!("unhandled event type: {}", event),
+        if recog_channel.recog_request.is_none() {
+            warn!("no active recog request");
+            return true;
+        }
+
+        match unsafe {
+            ffi::mpf_activity_detector_process(recog_channel.detector.unwrap(), frame.get())
+        } {
+            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
+                debug!("Detected voice activity.");
+                recog_channel.start_of_input();
             }
-
-            if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)
-                == ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32
-            {
-                if frame.get().marker == ffi::mpf_frame_marker_e::MPF_MARKER_START_OF_EVENT as i32 {
-                    debug!("Detected start of event.");
-                } else if frame.get().marker
-                    == ffi::mpf_frame_marker_e::MPF_MARKER_END_OF_EVENT as i32
-                {
-                    debug!("Detected end of event.");
-                }
-            }
-
-            if frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_AUDIO as i32 != 0 {
-                trace!("Received {} bytes of audio.", frame.get().codec_frame.size);
-
-                let handle = unsafe { (*(*recog_channel).engine).runtime_handle.as_ref() }
-                    .unwrap()
-                    .clone();
-                let sink = recog_channel.sink.as_mut().unwrap();
-                let message = tungstenite::Message::binary(frame.codec_frame());
-                if let Err(err) = handle.block_on(sink.send(message)) {
-                    error!("failed to send buffer: {}", err);
+            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
+                debug!("Detected voice inactivity.");
+                if let Err(_) = recog_channel.flush() {
                     return false;
                 }
+                recog_channel.end_of_input(
+                    ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                );
             }
-        } else {
-            warn!("no active recog request");
+            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
+                debug!("Detected no input.");
+                if let Err(_) = recog_channel.flush() {
+                    return false;
+                }
+                if recog_channel.timers_started == ffi::TRUE {
+                    recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
+                }
+            }
+            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
+            event => warn!("unhandled event type: {}", event),
         }
+
+        if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)
+            == ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32
+        {
+            if frame.get().marker == ffi::mpf_frame_marker_e::MPF_MARKER_START_OF_EVENT as i32 {
+                debug!("Detected start of event.");
+            } else if frame.get().marker == ffi::mpf_frame_marker_e::MPF_MARKER_END_OF_EVENT as i32
+            {
+                debug!("Detected end of event.");
+            }
+        }
+
+        if frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_AUDIO as i32 != 0 {
+            trace!("Received {} bytes of audio.", frame.get().codec_frame.size);
+            recog_channel.buffer.extend_from_slice(frame.codec_frame());
+            if let Err(_) = recog_channel.flush() {
+                return false;
+            }
+        }
+
         true
     }
 }

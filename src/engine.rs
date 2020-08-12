@@ -277,15 +277,22 @@ impl TaskData {
                             info!("Opened websocket connection :: {:?}", response);
 
                             tokio::spawn(async move {
-                                let (ws_tx, mut ws_rx) = socket.split();
+                                let (mut ws_tx, mut ws_rx) = socket.split();
+                                let mut rx = rx;
                                 let write = async {
                                     info!("Begin writing to websocket");
-                                    // let close =
-                                    //     stream::once(async { tungstenite::Message::Close(None) });
-                                    let close = stream::once(async { tungstenite::Message::Binary(vec![])});
-                                    if let Err(err) = rx.chain(close).map(Ok).forward(ws_tx).await {
-                                        warn!("Websocket connection closed");
+
+                                    while let Some(msg) = rx.next().await {
+                                        if let Err(err) = ws_tx.send(msg).await {
+                                            warn!("Websocket connection closed: {}", err);
+                                        }
                                     }
+
+                                    let end = tungstenite::Message::Binary(vec![]);
+                                    if let Err(err) = ws_tx.send(end).await {
+                                        warn!("Websocket connection closed: {}", err);
+                                    }
+
                                     info!("Done writing to websocket");
                                 };
                                 let read = async move {
@@ -294,34 +301,49 @@ impl TaskData {
 
                                         let msg = match msg {
                                             Ok(msg) => msg,
+                                            Err(tungstenite::Error::ConnectionClosed) => break,
                                             Err(err) => {
                                                 warn!("WebSocket error: {}", err);
                                                 continue;
                                             }
                                         };
 
+                                        #[derive(Deserialize)]
+                                        #[serde(untagged)]
+                                        enum Message {
+                                            Results(crate::stem::StreamingResponse),
+                                            Summary(crate::stem::Summary),
+                                        }
+
                                         match msg {
+                                            tungstenite::Message::Close(_) => {
+                                                info!("Websocket is closing");
+                                                break;
+                                            }
                                             tungstenite::Message::Text(buf) => {
-                                                let msg: crate::stem::StreamingResponse =
+                                                let msg: Message =
                                                     match serde_json::from_str(&buf) {
                                                         Ok(msg) => msg,
                                                         Err(err) => {
                                                             warn!("Failed to deserialize streaming response: {}", err);
+                                                            debug!("{}", buf);
                                                             continue;
                                                         }
                                                     };
 
                                                 let channel = unsafe { &mut *((*channel.0).method_obj as *mut Channel) };
-                                                channel.results_available(msg);
-
+                                                match msg {
+                                                    Message::Results(msg) => channel.results_available(msg),
+                                                    Message::Summary(msg) => channel.results_summary(msg),
+                                                }
                                             }
-                                            tungstenite::Message::Close(_) => {info!("WebSocket closed");}
                                             _ => warn!("Unhandled WS message type"),
                                         }
                                     }
                                 };
 
-                                future::join(write, read).await
+                                future::join(write, read).await;
+                                drop(ws_tx);
                             });
 
                             true

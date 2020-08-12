@@ -13,16 +13,19 @@ bindgen = "0.50.0"
 
 [dependencies]
 base64 = "0.12"
+bytes = "0.5"
+futures = "0.3"
+http = "0.2"
+itertools = "0.9"
 log = "0.4"
 reqwest = { version = "0.10", features = ["cookies", "json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 tokio = { version = "0.2", features = ["rt-core"] }
-http = "0.2"
 tokio-tungstenite = "0.10"
 tungstenite = "0.10"
-futures = "0.3"
 url = { version = "2.1", features = ["serde"] }
+xml-rs = "0.8"
 
 backtrace = "0.3"
