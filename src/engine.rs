@@ -58,6 +58,19 @@ pub struct Config {
     brain_url: url::Url,
     brain_username: String,
     brain_password: String,
+    #[serde(default = "Config::default_chunk_size")]
+    pub chunk_size: u64,
+}
+
+impl Config {
+    /// 0.25 seconds of 8kHz 16-bit audio.
+    ///
+    /// UniMRCP sends audio to the server plugin in chunks of 160
+    /// bytes, which would incur an unreasonable amount of messaging
+    /// overhead.
+    const fn default_chunk_size() -> u64 {
+        4000
+    }
 }
 
 /// The Deepgram ASR engine.
@@ -196,6 +209,10 @@ impl Engine {
 
         // Drop config.
         self.config.take();
+    }
+
+    pub fn config(&self) -> &Config {
+        self.config.as_ref().unwrap()
     }
 }
 

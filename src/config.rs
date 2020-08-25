@@ -96,6 +96,22 @@ impl<'de, 'a> Deserializer<'de> for &'a mut AprTableDeserializer {
         visitor.visit_str(value)
     }
 
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let field = self.field.ok_or(Error::Internal)?;
+
+        let key = CString::new(field).unwrap();
+        let value = unsafe { ffi::apr_table_get(self.table, key.as_ptr()) };
+        if value.is_null() {
+            return Err(Error::NotFound);
+        }
+        let value = unsafe { CStr::from_ptr(value) }.to_str().unwrap();
+        let value = value.parse().map_err(serde::de::Error::custom)?;
+        visitor.visit_u64(value)
+    }
+
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
@@ -140,7 +156,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut AprTableDeserializer {
     serde::forward_to_deserialize_any! {
         bool
             i8 i16 i32 i64 i128
-            u8 u16 u32 u64 u128
+            u8 u16 u32 u128
             f32 f64
             char bytes byte_buf
             option unit unit_struct newtype_struct seq tuple

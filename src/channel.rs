@@ -38,6 +38,13 @@ impl Channel {
         pool: &mut Pool,
     ) -> Result<*mut ffi::mrcp_engine_channel_t, Error> {
         info!("Constructing a Deepgram ASR Engine Channel.");
+
+        // TODO: This is really clunky, because we're mixing `*mut
+        // ffi::mrcp_engine_t` and `*mut Engine`, and so they need to
+        // be named differently.
+        let engine_obj: &Engine = unsafe { &*((*engine).obj as *const _) };
+        let config = engine_obj.config();
+
         let data = Self {
             engine: unsafe { *engine }.obj as *mut _,
             recog_request: None,
@@ -48,9 +55,7 @@ impl Channel {
             sink: None,
             results: Vec::new(),
             buffer: BytesMut::new(),
-            // TODO: Make this configurable/dynamic
-            // 32000 is 1 second of 16kHz single channel 16-bit audio
-            chunk_size: 32000,
+            chunk_size: config.chunk_size as usize,
             completion_cause: None,
         };
         let data = pool.palloc(data);
