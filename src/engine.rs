@@ -60,6 +60,8 @@ pub struct Config {
     brain_password: String,
     #[serde(default = "Config::default_chunk_size")]
     pub chunk_size: u64,
+    #[serde(default)]
+    pub stream_results: bool,
 }
 
 impl Config {

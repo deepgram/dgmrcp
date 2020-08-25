@@ -132,6 +132,16 @@ impl Channel {
 
         if response.is_final {
             self.results.push(response);
+
+            let engine: &Engine = unsafe { &*(self.engine as *const _) };
+            let config = engine.config();
+            if config.stream_results {
+                let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
+                match self.send_recognition_complete(cause) {
+                    Ok(()) => self.results.clear(),
+                    Err(()) => error!("Failed to send results"),
+                }
+            }
         }
     }
 
@@ -187,6 +197,29 @@ impl Channel {
         // TODO: Pass this in somehow
         let cause = self.completion_cause.unwrap();
 
+        match self.send_recognition_complete(cause) {
+            Ok(()) => (),
+            Err(()) => error!("failed to send recognition results"),
+        }
+
+        self.recog_request.take();
+    }
+
+    pub fn end_of_input(&mut self, cause: ffi::mrcp_recog_completion_cause_e::Type) {
+        debug!("end_of_input");
+
+        if self.sink.take().is_some() {
+            info!("closed write end of channel");
+        }
+        self.completion_cause = Some(cause);
+    }
+
+    pub fn send_recognition_complete(
+        &mut self,
+        cause: ffi::mrcp_recog_completion_cause_e::Type,
+    ) -> Result<(), ()> {
+        debug!("send recognition complete");
+
         let message = unsafe {
             ffi::mrcp_event_create(
                 self.recog_request.unwrap() as *const _,
@@ -196,7 +229,7 @@ impl Channel {
         };
 
         if message.is_null() {
-            return;
+            return Err(());
         }
 
         let header =
@@ -223,7 +256,7 @@ impl Channel {
                     warn!("Failed to build response body: {}", err);
                     // TODO: This leaks memory from the allocation of
                     // the message above.
-                    return;
+                    return Err(());
                 }
             };
 
@@ -254,100 +287,11 @@ impl Channel {
             }
         }
 
-        self.recog_request.take();
-
         unsafe {
-            mrcp_engine_channel_message_send(self.channel, message);
-        }
-    }
-
-    pub fn end_of_input(&mut self, cause: ffi::mrcp_recog_completion_cause_e::Type) {
-        debug!("end_of_input");
-
-        if self.sink.take().is_some() {
-            info!("closed write end of channel");
-        }
-        self.completion_cause = Some(cause);
-    }
-
-    pub fn recognition_complete(
-        &mut self,
-        cause: ffi::mrcp_recog_completion_cause_e::Type,
-    ) -> bool {
-        debug!("Recognition complete.");
-
-        let message = unsafe {
-            ffi::mrcp_event_create(
-                self.recog_request.unwrap() as *const _,
-                ffi::mrcp_recognizer_event_id::RECOGNIZER_RECOGNITION_COMPLETE as usize,
-                (*self.recog_request.unwrap()).pool,
-            )
-        };
-
-        if message.is_null() {
-            return false;
+            mrcp_engine_channel_message_send(self.channel, message) != 0;
         }
 
-        let header =
-            unsafe { mrcp_resource_header_prepare(message) as *mut ffi::mrcp_recog_header_t };
-        if !header.is_null() {
-            unsafe {
-                (*header).completion_cause = cause;
-                ffi::mrcp_resource_header_property_add(
-                    message,
-                    ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
-                );
-            }
-        }
-
-        unsafe {
-            (*message).start_line.request_state =
-                ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_COMPLETE;
-        }
-
-        if cause == ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS {
-            unsafe {
-                let body = CString::new(
-                    br#"<?xml version="1.0"?>
-<result> 
-  <interpretation grammar="session:request1@form-level.store" confidence="0.97">
-    <instance>one</instance>
-    <input mode="speech">one</input>
-  </interpretation>
-</result>
-"#
-                    .to_vec(),
-                )
-                .unwrap();
-                apt_string_assign_n(
-                    &mut (*message).body,
-                    body.as_ptr(),
-                    body.to_bytes().len(),
-                    (*message).pool,
-                );
-            }
-
-            let header = unsafe { mrcp_generic_header_prepare(message) };
-            if !header.is_null() {
-                unsafe {
-                    let content_type =
-                        CStr::from_bytes_with_nul_unchecked(b"application/x-nlsml\0");
-                    apt_string_assign(
-                        &mut (*header).content_type,
-                        content_type.as_ptr(),
-                        (*message).pool,
-                    );
-                    ffi::mrcp_generic_header_property_add(
-                        message,
-                        ffi::mrcp_generic_header_id::GENERIC_HEADER_CONTENT_TYPE as usize,
-                    );
-                }
-            }
-        }
-
-        self.recog_request.take();
-
-        unsafe { mrcp_engine_channel_message_send(self.channel, message) != 0 }
+        Ok(())
     }
 
     pub fn flush(&mut self) -> Result<(), ()> {
