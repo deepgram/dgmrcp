@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 # Dependencies for building the C library.
 [build-dependencies]
-bindgen = "0.50.0"
+bindgen = { version = "0.50.0", default-features = false }
 
 [dependencies]
 base64 = "0.12"
