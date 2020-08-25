@@ -139,8 +139,11 @@ impl<'de, 'a> Deserializer<'de> for &'a mut AprTableDeserializer {
                         table: self.deserializer.table,
                         field: Some(field),
                     };
-                    let value = DeserializeSeed::deserialize(seed, &mut deserializer)?;
-                    Ok(Some(value))
+                    match DeserializeSeed::deserialize(seed, &mut deserializer) {
+                        Ok(value) => Ok(Some(value)),
+                        Err(Error::NotFound) => Ok(None),
+                        Err(err) => Err(err),
+                    }
                 } else {
                     Ok(None)
                 }
