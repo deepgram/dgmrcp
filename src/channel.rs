@@ -151,6 +151,7 @@ impl Channel {
             .iter()
             .filter_map(|resp| resp.channel.alternatives.get(0))
             .map(|alt| alt.transcript.as_str())
+            .filter(|alt| !alt.is_empty())
             .join(" ");
 
         // Take the median of the confidence values.
