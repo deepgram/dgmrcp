@@ -125,7 +125,9 @@ impl Channel {
                 .unwrap_or("<< NO RESULTS >>")
         );
 
-        self.results.push(response);
+        if response.is_final {
+            self.results.push(response);
+        }
     }
 
     fn build_response(&self) -> xml::writer::Result<CString> {

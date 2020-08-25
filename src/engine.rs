@@ -254,7 +254,8 @@ impl TaskData {
                 let mut url = config.brain_url.join("listen/stream").unwrap();
                 // TODO: Perhaps these should not be hardcoded?
                 url.query_pairs_mut()
-                    .append_pair("interim_results", "false")
+                    .append_pair("endpointing", "true")
+                    .append_pair("interim_results", "true")
                     .append_pair("encoding", "linear16")
                     .append_pair("sample_rate", &sample_rate.to_string())
                     .append_pair("channels", &channels.to_string());
