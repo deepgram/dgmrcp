@@ -5,6 +5,23 @@ This is a server plugin for [UniMRCP](https://unimrcp.org/) to allow
 [`speechrecog`](https://tools.ietf.org/html/rfc6787#section-9)
 resource in an MRCP server.
 
+## Building
+
+A Dockerfile is provided that will download and build UniMRCP and its
+dependencies, as well as build the server plugin.
+
+```bash
+$ docker build -t dgmrcp .
+```
+
+The server plugin can be copied out of the container by mounting a
+directory on your host and running the image to copy the binary:
+
+```bash
+$ mkdir out
+$ docker run --rm -v $PWD/out:/out dgmrcp cp /dgmrcp/target/release/libdgmrcp.so /out/
+```
+
 ## License
 
 Licensed under either of
