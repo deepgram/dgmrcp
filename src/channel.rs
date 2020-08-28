@@ -215,6 +215,10 @@ impl Channel {
             info!("closed write end of channel");
         }
         self.completion_cause = Some(cause);
+        match self.send_recognition_complete(cause) {
+            Ok(()) => (),
+            Err(()) => error!("failed to send recognition results"),
+        }
     }
 
     pub fn send_recognition_complete(
