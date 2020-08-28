@@ -119,16 +119,18 @@ impl Channel {
     }
 
     pub fn results_available(&mut self, response: StreamingResponse) {
-        info!(
-            "Results available (FINAL={}): {}",
-            response.is_final,
-            response
-                .channel
-                .alternatives
-                .get(0)
-                .map(|alt| alt.transcript.as_str())
-                .unwrap_or("<< NO RESULTS >>")
-        );
+        if response.is_final {
+            info!(
+                "Results available (FINAL={}): {}",
+                response.is_final,
+                response
+                    .channel
+                    .alternatives
+                    .get(0)
+                    .map(|alt| alt.transcript.as_str())
+                    .unwrap_or("<< NO RESULTS >>")
+            );
+        }
 
         if response.is_final {
             self.results.push(response);
