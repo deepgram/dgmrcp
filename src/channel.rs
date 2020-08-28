@@ -197,14 +197,6 @@ impl Channel {
     pub fn results_summary(&mut self, summary: Summary) {
         info!("results_summary({:?})", summary);
 
-        // TODO: Pass this in somehow
-        let cause = self.completion_cause.unwrap();
-
-        match self.send_recognition_complete(cause) {
-            Ok(()) => (),
-            Err(()) => error!("failed to send recognition results"),
-        }
-
         self.recog_request.take();
     }
 
