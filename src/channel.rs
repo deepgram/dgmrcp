@@ -295,10 +295,20 @@ impl Channel {
 
     pub fn flush(&mut self) -> Result<(), ()> {
         while self.buffer.len() >= self.chunk_size {
-            let handle = unsafe { (*(*self).engine).runtime_handle.as_ref() }
-                .unwrap()
-                .clone();
-            let sink = self.sink.as_mut().unwrap();
+            let handle = match unsafe { (*(*self).engine).runtime_handle.as_ref() } {
+                Some(handle) => handle,
+                None => {
+                    warn!("no runtime handle");
+                    return Err(());
+                }
+            };
+            let sink = match self.sink.as_mut() {
+                Some(sink) => sink,
+                None => {
+                    warn!("no websocket sink");
+                    return Err(());
+                }
+            };
             let message = tungstenite::Message::binary(self.buffer.split().as_ref());
             if let Err(err) = handle.block_on(sink.send(message)) {
                 error!("failed to send buffer: {}", err);
