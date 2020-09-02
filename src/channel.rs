@@ -197,6 +197,12 @@ impl Channel {
     pub fn results_summary(&mut self, summary: Summary) {
         info!("results_summary({:?})", summary);
 
+        let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
+        match self.send_recognition_complete(cause) {
+            Ok(()) => (),
+            Err(()) => error!("failed to send recognition results"),
+        }
+
         self.recog_request.take();
     }
 
@@ -207,10 +213,6 @@ impl Channel {
             info!("closed write end of channel");
         }
         self.completion_cause = Some(cause);
-        match self.send_recognition_complete(cause) {
-            Ok(()) => (),
-            Err(()) => error!("failed to send recognition results"),
-        }
     }
 
     pub fn send_recognition_complete(
