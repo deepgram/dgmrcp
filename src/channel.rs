@@ -108,13 +108,13 @@ impl Channel {
         };
 
         if message.is_null() {
-            false
-        } else {
-            unsafe {
-                (*message).start_line.request_state =
-                    ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
-                mrcp_engine_channel_message_send(self.channel, message) != 0
-            }
+            return false;
+        }
+
+        unsafe {
+            (*message).start_line.request_state =
+                ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
+            mrcp_engine_channel_message_send(self.channel, message) != 0
         }
     }
 
