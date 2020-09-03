@@ -342,25 +342,27 @@ unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) 
 
 unsafe extern "C" fn channel_open(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Opening Deepgram ASR channel.");
-    let (tx, rx) = mpsc::channel(8);
-    let channel_data = &mut *((*channel).method_obj as *mut Channel);
-    channel_data.sink = Some(tx);
+    // let (tx, rx) = mpsc::channel(8);
+    // let channel_data = &mut *((*channel).method_obj as *mut Channel);
+    // channel_data.sink = Some(tx);
 
-    let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
-    if codec_descriptor.is_null() {
-        error!("Failed to get codec descriptor");
-        return ffi::FALSE as ffi::apt_bool_t;
-    }
+    // let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
+    // if codec_descriptor.is_null() {
+    //     error!("Failed to get codec descriptor");
+    //     return ffi::FALSE as ffi::apt_bool_t;
+    // }
 
-    msg_signal(
-        MessageType::Open {
-            rx,
-            sample_rate: (*codec_descriptor).sampling_rate,
-            channels: (*codec_descriptor).channel_count,
-        },
-        channel,
-        ptr::null_mut(),
-    )
+    // msg_signal(
+    //     MessageType::Open {
+    //         rx,
+    //         sample_rate: (*codec_descriptor).sampling_rate,
+    //         channels: (*codec_descriptor).channel_count,
+    //     },
+    //     channel,
+    //     ptr::null_mut(),
+    // )
+
+    unsafe { mrcp_engine_channel_open_respond(channel, ffi::TRUE) }
 }
 
 unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
@@ -462,10 +464,29 @@ pub(crate) unsafe fn recognize_channel(
         }
     }
 
+    recog_channel.results.clear();
+
+    let (tx, rx) = mpsc::channel(8);
+    recog_channel.sink = Some(tx);
+    let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
+    if codec_descriptor.is_null() {
+        error!("Failed to get codec descriptor");
+        return ffi::FALSE as ffi::apt_bool_t;
+    }
+    msg_signal(
+        MessageType::Open {
+            rx,
+            sample_rate: (*codec_descriptor).sampling_rate,
+            channels: (*codec_descriptor).channel_count,
+        },
+        channel,
+        ptr::null_mut(),
+    );
+
     (*response).start_line.request_state = ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
-    mrcp_engine_channel_message_send(channel, response);
     recog_channel.recog_request = Some(request);
-    ffi::TRUE
+
+    mrcp_engine_channel_message_send(channel, response)
 }
 
 // #[derive(Serialize)]

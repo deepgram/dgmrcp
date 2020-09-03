@@ -378,10 +378,6 @@ impl TaskData {
                             false
                         }
                     };
-
-                    unsafe {
-                        mrcp_engine_channel_open_respond(channel.0, result as ffi::apt_bool_t);
-                    }
                 });
             }
             MessageType::Close => unsafe {
