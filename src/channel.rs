@@ -197,6 +197,10 @@ impl Channel {
     pub fn results_summary(&mut self, summary: Summary) {
         info!("results_summary({:?})", summary);
 
+        if self.recog_request.is_none() {
+            return;
+        }
+
         let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
         match self.send_recognition_complete(cause) {
             Ok(()) => (),
