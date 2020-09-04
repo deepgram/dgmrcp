@@ -63,6 +63,8 @@ pub struct Config {
     pub chunk_size: u64,
     #[serde(default)]
     pub stream_results: bool,
+    #[serde(default)]
+    pub plaintext_results: bool,
 }
 
 impl Config {

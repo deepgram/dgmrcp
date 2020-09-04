@@ -151,7 +151,7 @@ impl Channel {
         }
     }
 
-    fn build_response(&self) -> xml::writer::Result<CString> {
+    fn build_response(&self, plaintext_results: bool) -> xml::writer::Result<CString> {
         let transcript = self
             .results
             .iter()
@@ -175,6 +175,14 @@ impl Channel {
                 n => confidences[n / 2],
             }
         };
+
+        // Short circuit for the case where we want to return
+        // plaintext results instead of an XML response. This is
+        // contrary to the MRCP spec, but it can be useful for
+        // debugging.
+        if plaintext_results {
+            return Ok(CString::new(transcript).unwrap());
+        }
 
         let mut buffer = vec![];
         let mut writer = xml::EmitterConfig::new()
@@ -259,7 +267,10 @@ impl Channel {
         }
 
         if cause == ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS {
-            let body = match self.build_response() {
+            let engine: &Engine = unsafe { &*(self.engine as *const _) };
+            let plaintext_results = engine.config().plaintext_results;
+
+            let body = match self.build_response(plaintext_results) {
                 Ok(body) => body,
                 Err(err) => {
                     warn!("Failed to build response body: {}", err);
