@@ -88,7 +88,6 @@ impl Stream {
         }
 
         if recog_channel.recog_request.is_none() {
-            warn!("no active recog request");
             return true;
         }
 
