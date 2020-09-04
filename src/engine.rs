@@ -51,6 +51,7 @@ unsafe extern "C" fn engine_create_channel(
 ) -> *mut ffi::mrcp_engine_channel_t {
     Channel::alloc(engine, &mut pool.into())
         .expect("Failed to allocate the Deepgram MRCP engine channel.")
+        .as_ptr()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -292,7 +293,7 @@ impl TaskData {
                 struct SendPtr<T>(*mut T);
                 unsafe impl<T> Send for SendPtr<T> {}
 
-                let channel = SendPtr(msg.channel);
+                let channel = SendPtr(msg.channel.as_ptr());
 
                 self.runtime_handle.spawn(async move {
                     info!("Opening websocket connection");
@@ -381,11 +382,51 @@ impl TaskData {
                 });
             }
             MessageType::Close => unsafe {
-                mrcp_engine_channel_close_respond(msg.channel);
+                mrcp_engine_channel_close_respond(msg.channel.as_ptr());
             },
-            MessageType::RequestProcess => unsafe {
-                dispatch_request(msg.channel, msg.request);
-            },
+            MessageType::RequestProcess { request } => {
+                let mut channel = msg.channel;
+
+                let method_id = unsafe { request.as_ref().start_line.method_id as u32 };
+
+                // TODO: Consider using ptr::NonNull here.
+                let response =
+                    unsafe { ffi::mrcp_response_create(request.as_ptr(), request.as_ref().pool) };
+                let processed = match method_id {
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => unsafe {
+                        crate::channel::recognize_channel(
+                            channel.as_mut(),
+                            request.as_ptr(),
+                            response,
+                        ) != 0
+                    },
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
+                        {
+                            let channel =
+                                unsafe { &mut *(channel.as_ref().method_obj as *mut Channel) };
+                            channel.timers_started = ffi::TRUE;
+                        }
+                        unsafe { mrcp_engine_channel_message_send(channel.as_ptr(), response) != 0 }
+                    }
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_STOP => {
+                        info!("Received STOP message");
+                        let channel =
+                            unsafe { &mut *(channel.as_ref().method_obj as *mut Channel) };
+                        channel.stop_response = Some(response);
+                        false
+                    }
+                    // TODO: These are probably useful to implement.
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => false,
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => false,
+                    _ => false,
+                };
+
+                if !processed {
+                    unsafe {
+                        mrcp_engine_channel_message_send(channel.as_ptr(), response);
+                    }
+                }
+            }
         }
     }
 }

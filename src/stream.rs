@@ -80,7 +80,9 @@ impl Stream {
         // TODO: What is this for?
         if let Some(stop_response) = recog_channel.stop_response.take() {
             debug!("Received stop response");
-            unsafe { mrcp_engine_channel_message_send(recog_channel.channel, stop_response) };
+            unsafe {
+                mrcp_engine_channel_message_send(recog_channel.channel.as_ptr(), stop_response)
+            };
             recog_channel.recog_request.take();
             return true;
         }

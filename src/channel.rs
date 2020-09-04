@@ -12,7 +12,7 @@ use bytes::BytesMut;
 use itertools::Itertools;
 use std::{
     ffi::{CStr, CString},
-    mem, ptr,
+    ptr::NonNull,
 };
 use tokio::sync::mpsc;
 use xml::writer::XmlEvent;
@@ -20,7 +20,7 @@ use xml::writer::XmlEvent;
 #[repr(C)]
 pub struct Channel {
     pub engine: *mut Engine,
-    pub channel: *mut ffi::mrcp_engine_channel_t,
+    pub channel: NonNull<ffi::mrcp_engine_channel_t>,
     pub recog_request: Option<*mut ffi::mrcp_message_t>,
     pub stop_response: Option<*mut ffi::mrcp_message_t>,
     pub timers_started: ffi::apt_bool_t,
@@ -36,7 +36,7 @@ impl Channel {
     pub(crate) fn alloc(
         engine: *mut ffi::mrcp_engine_t,
         pool: &mut Pool,
-    ) -> Result<*mut ffi::mrcp_engine_channel_t, Error> {
+    ) -> Result<NonNull<ffi::mrcp_engine_channel_t>, Error> {
         info!("Constructing a Deepgram ASR Engine Channel.");
 
         // TODO: This is really clunky, because we're mixing `*mut
@@ -51,7 +51,8 @@ impl Channel {
             stop_response: None,
             detector: Some(unsafe { ffi::mpf_activity_detector_create(pool.get()) }),
             timers_started: ffi::FALSE as i32,
-            channel: ptr::null_mut(),
+            // This will be set before the end of this function.
+            channel: NonNull::dangling(),
             sink: None,
             results: Vec::new(),
             buffer: BytesMut::new(),
@@ -80,7 +81,7 @@ impl Channel {
             )
         };
 
-        let channel = unsafe {
+        let channel = match NonNull::new(unsafe {
             ffi::mrcp_engine_channel_create(
                 engine,
                 &CHANNEL_VTABLE,
@@ -88,6 +89,9 @@ impl Channel {
                 termination,
                 pool.get(),
             )
+        }) {
+            Some(ptr) => ptr,
+            None => return Err(Error::Initialization),
         };
 
         unsafe {
@@ -114,7 +118,7 @@ impl Channel {
         unsafe {
             (*message).start_line.request_state =
                 ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
-            mrcp_engine_channel_message_send(self.channel, message) != 0
+            mrcp_engine_channel_message_send(self.channel.as_ptr(), message) != 0
         }
     }
 
@@ -293,7 +297,7 @@ impl Channel {
         }
 
         unsafe {
-            mrcp_engine_channel_message_send(self.channel, message) != 0;
+            mrcp_engine_channel_message_send(self.channel.as_ptr(), message) != 0;
         }
 
         Ok(())
@@ -342,53 +346,35 @@ unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) 
 
 unsafe extern "C" fn channel_open(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Opening Deepgram ASR channel.");
-    // let (tx, rx) = mpsc::channel(8);
-    // let channel_data = &mut *((*channel).method_obj as *mut Channel);
-    // channel_data.sink = Some(tx);
-
-    // let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
-    // if codec_descriptor.is_null() {
-    //     error!("Failed to get codec descriptor");
-    //     return ffi::FALSE as ffi::apt_bool_t;
-    // }
-
-    // msg_signal(
-    //     MessageType::Open {
-    //         rx,
-    //         sample_rate: (*codec_descriptor).sampling_rate,
-    //         channels: (*codec_descriptor).channel_count,
-    //     },
-    //     channel,
-    //     ptr::null_mut(),
-    // )
-
-    unsafe { mrcp_engine_channel_open_respond(channel, ffi::TRUE) }
+    mrcp_engine_channel_open_respond(channel, ffi::TRUE)
 }
 
 unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Closing Deepgram ASR channel.");
 
-    let channel_data = &mut *((*channel).method_obj as *mut Channel);
+    let mut channel = NonNull::new(channel).expect("channel ptr should never be null");
+    let channel_data = &mut *(channel.as_mut().method_obj as *mut Channel);
     channel_data.sink.take();
 
-    msg_signal(MessageType::Close, channel, ptr::null_mut())
+    msg_signal(MessageType::Close, channel)
 }
 
 unsafe extern "C" fn channel_process_request(
     channel: *mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
-    msg_signal(MessageType::RequestProcess, channel, request)
+    let channel = NonNull::new(channel).expect("channel ptr should never be null");
+    let request = NonNull::new(request).expect("request pointer should never be null");
+    msg_signal(MessageType::RequestProcess { request }, channel)
 }
 
 unsafe fn msg_signal(
     message_type: MessageType,
-    channel_ptr: *mut ffi::mrcp_engine_channel_t,
-    request: *mut ffi::mrcp_message_t,
+    channel: NonNull<ffi::mrcp_engine_channel_t>,
 ) -> ffi::apt_bool_t {
     debug!("Message signal: {:?}", message_type);
-    let channel = &mut *((*channel_ptr).method_obj as *mut Channel);
-    let engine = channel.engine;
+    let channel_data = &mut *(channel.as_ref().method_obj as *mut Channel);
+    let engine = channel_data.engine;
     let task = ffi::apt_consumer_task_base_get((*engine).task.unwrap());
     let msg_ptr = ffi::apt_task_msg_get(task);
     if !msg_ptr.is_null() {
@@ -397,8 +383,7 @@ unsafe fn msg_signal(
             msg,
             Message {
                 message_type,
-                channel: channel_ptr,
-                request,
+                channel,
             },
         );
 
@@ -414,15 +399,13 @@ unsafe fn msg_signal(
 }
 
 pub(crate) unsafe fn recognize_channel(
-    channel: *mut ffi::mrcp_engine_channel_t,
+    channel: &mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
     response: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
     debug!("Channel recognize.");
-    // TODO: Get rid of manually drop
-    let mut recog_channel =
-        mem::ManuallyDrop::new(Box::from_raw((*channel).method_obj as *mut Channel));
-    let descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
+    let recog_channel = &mut *(channel.method_obj as *mut Channel);
+    let descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel as *mut _);
 
     if descriptor.is_null() {
         warn!("Failed to get codec description.");
@@ -468,7 +451,7 @@ pub(crate) unsafe fn recognize_channel(
 
     let (tx, rx) = mpsc::channel(8);
     recog_channel.sink = Some(tx);
-    let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel);
+    let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel as *mut _);
     if codec_descriptor.is_null() {
         error!("Failed to get codec descriptor");
         return ffi::FALSE as ffi::apt_bool_t;
@@ -479,8 +462,7 @@ pub(crate) unsafe fn recognize_channel(
             sample_rate: (*codec_descriptor).sampling_rate,
             channels: (*codec_descriptor).channel_count,
         },
-        channel,
-        ptr::null_mut(),
+        channel.into(),
     );
 
     (*response).start_line.request_state = ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
