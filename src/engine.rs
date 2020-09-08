@@ -47,15 +47,11 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
         mem::size_of::<crate::channel::Message>(),
         pool.get(),
     );
-    let consumer_task = dbg!(ffi::apt_consumer_task_create(
-        task_data as *mut _,
-        msg_pool,
-        pool.get()
-    ));
+    let consumer_task = ffi::apt_consumer_task_create(task_data as *mut _, msg_pool, pool.get());
     if consumer_task.is_null() {
         return ffi::FALSE;
     }
-    let task = dbg!(ffi::apt_consumer_task_base_get(consumer_task));
+    let task = ffi::apt_consumer_task_base_get(consumer_task);
     let c_str = CStr::from_bytes_with_nul_unchecked(RECOG_ENGINE_TASK_NAME);
     ffi::apt_task_name_set(task, c_str.as_ptr());
     let vtable = {
