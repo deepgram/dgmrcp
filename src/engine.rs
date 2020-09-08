@@ -111,6 +111,7 @@ pub struct Config {
     pub stream_results: bool,
     #[serde(default)]
     pub plaintext_results: bool,
+    pub language: Option<String>,
 }
 
 impl Config {

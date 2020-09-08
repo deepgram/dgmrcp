@@ -130,20 +130,20 @@ pub unsafe fn mrcp_resource_header_get(message: *const ffi::mrcp_message_t) -> *
 
 pub unsafe fn mrcp_resource_header_property_check(
     message: *const ffi::mrcp_message_t,
-    id: ffi::apr_size_t,
+    id: ffi::mrcp_recognizer_header_id::Type,
 ) -> ffi::apt_bool_t {
     apt_header_section_field_check(
         &(*message).header.header_section as *const _,
-        id + ffi::mrcp_generic_header_id::GENERIC_HEADER_COUNT as usize,
+        id + ffi::mrcp_generic_header_id::GENERIC_HEADER_COUNT,
     )
 }
 
 pub unsafe fn apt_header_section_field_check(
     header: *const ffi::apt_header_section_t,
-    id: ffi::apr_size_t,
+    id: ffi::mrcp_recognizer_header_id::Type,
 ) -> ffi::apt_bool_t {
-    if id < (*header).arr_size {
-        if (*(*header).arr.add(id)).is_null() {
+    if (id as usize) < (*header).arr_size {
+        if (*(*header).arr.add(id as usize)).is_null() {
             ffi::FALSE
         } else {
             ffi::TRUE

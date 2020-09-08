@@ -51,6 +51,20 @@ pub mod ffi {
 
     pub const FALSE: apt_bool_t = 0;
     pub const TRUE: apt_bool_t = 1;
+
+    impl apt_str_t {
+        /// Access this value as a Rust `&str`.
+        ///
+        /// # Panics
+        ///
+        /// This will panic if the string is not valid UTF-8. The MRCP
+        /// RFC states that all strings should be UTF-8, so this is an
+        /// error case that should not generally arise.
+        pub fn as_str(&self) -> &str {
+            let slice = unsafe { std::slice::from_raw_parts(self.buf as *const u8, self.length) };
+            std::str::from_utf8(slice).expect("all strings should be UTF-8")
+        }
+    }
 }
 
 /// The functional equivalent of `MRCP_PLUGIN_VERSION_DECLARE`.

@@ -33,6 +33,7 @@ pub struct Channel {
     completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
     runtime_handle: tokio::runtime::Handle,
     config: Arc<Config>,
+    parameters: Parameters,
 }
 
 pub struct Message {
@@ -46,11 +47,17 @@ enum MessageType {
         rx: mpsc::Receiver<tungstenite::Message>,
         sample_rate: u16,
         channels: u8,
+        language: Option<String>,
     },
     Close,
     RequestProcess {
         request: NonNull<ffi::mrcp_message_t>,
     },
+}
+
+#[derive(Default)]
+struct Parameters {
+    language: Option<String>,
 }
 
 impl Channel {
@@ -66,7 +73,7 @@ impl Channel {
         let engine_obj: &Engine = unsafe { &*((*engine).obj as *const _) };
         let config = engine_obj.config.clone();
 
-        let data = Self {
+        let data = Channel {
             engine: unsafe { *engine }.obj as *mut _,
             recog_request: None,
             stop_response: None,
@@ -81,6 +88,7 @@ impl Channel {
             completion_cause: None,
             runtime_handle: engine_obj.runtime_handle.clone(),
             config,
+            parameters: Default::default(),
         };
         let data = pool.palloc(data);
 
@@ -134,6 +142,7 @@ impl Channel {
                 rx,
                 sample_rate,
                 channels,
+                language,
             } => {
                 let auth = format!(
                     "{}:{}",
@@ -148,6 +157,9 @@ impl Channel {
                     .append_pair("encoding", "linear16")
                     .append_pair("sample_rate", &sample_rate.to_string())
                     .append_pair("channels", &channels.to_string());
+                if let Some(language) = language {
+                    url.query_pairs_mut().append_pair("language", &language);
+                }
 
                 info!("Building request to {}", url);
 
@@ -263,11 +275,7 @@ impl Channel {
                     unsafe { ffi::mrcp_response_create(request.as_ptr(), request.as_ref().pool) };
                 let processed = match method_id {
                     ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => unsafe {
-                        crate::channel::recognize_channel(
-                            channel.as_mut(),
-                            request.as_ptr(),
-                            response,
-                        ) != 0
+                        recognize_channel(channel.as_mut(), request.as_ptr(), response) != 0
                     },
                     ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
                         {
@@ -285,7 +293,10 @@ impl Channel {
                         false
                     }
                     // TODO: These are probably useful to implement.
-                    ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => false,
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => {
+                        self.set_params(request.as_ptr());
+                        false
+                    }
                     ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => false,
                     _ => false,
                 };
@@ -527,6 +538,26 @@ impl Channel {
 
         Ok(())
     }
+
+    fn set_params(&mut self, request: *mut ffi::mrcp_message_t) -> Result<(), ()> {
+        let headers = NonNull::new(
+            unsafe { mrcp_resource_header_get(request) } as *mut ffi::mrcp_recog_header_t
+        )
+        .ok_or(())?;
+
+        if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
+            )
+        } == ffi::TRUE
+        {
+            let language = unsafe { headers.as_ref() }.speech_language.as_str();
+            self.parameters.language = Some(language.to_string());
+        }
+
+        Ok(())
+    }
 }
 
 /// Define the engine v-table
@@ -592,7 +623,7 @@ unsafe fn msg_signal(
     }
 }
 
-pub(crate) unsafe fn recognize_channel(
+unsafe fn recognize_channel(
     channel: &mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
     response: *mut ffi::mrcp_message_t,
@@ -610,18 +641,20 @@ pub(crate) unsafe fn recognize_channel(
 
     recog_channel.timers_started = ffi::TRUE;
 
+    let mut recognize_language = None;
+
     let recog_header = mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t;
     if !recog_header.is_null() {
         if mrcp_resource_header_property_check(
             request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_START_INPUT_TIMERS as usize,
+            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_START_INPUT_TIMERS,
         ) == ffi::TRUE
         {
             recog_channel.timers_started = (*recog_header).start_input_timers;
         }
         if mrcp_resource_header_property_check(
             request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT as usize,
+            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT,
         ) == ffi::TRUE
         {
             ffi::mpf_activity_detector_noinput_timeout_set(
@@ -631,13 +664,21 @@ pub(crate) unsafe fn recognize_channel(
         }
         if mrcp_resource_header_property_check(
             request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT as usize,
+            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT,
         ) == ffi::TRUE
         {
             ffi::mpf_activity_detector_silence_timeout_set(
                 recog_channel.detector.unwrap(),
                 (*recog_header).speech_complete_timeout,
             );
+        }
+
+        if mrcp_resource_header_property_check(
+            request,
+            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
+        ) == ffi::TRUE
+        {
+            recognize_language = Some((*recog_header).speech_language.as_str());
         }
     }
 
@@ -655,6 +696,12 @@ pub(crate) unsafe fn recognize_channel(
             rx,
             sample_rate: (*codec_descriptor).sampling_rate,
             channels: (*codec_descriptor).channel_count,
+            // Use the most specific configured language, if
+            // available.
+            language: recognize_language
+                .or(recog_channel.parameters.language.as_deref())
+                .or(recog_channel.config.language.as_deref())
+                .map(|s| s.to_string()),
         },
         channel.into(),
     );
