@@ -76,6 +76,8 @@ pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mr
     info!("plugin create");
 
     unsafe {
+        // We create the engine initially with its object pointer set
+        // to null. It will be initialized in `engine_open`.
         ffi::mrcp_engine_create(
             ffi::mrcp_resource_type_e::MRCP_RECOGNIZER_RESOURCE as usize,
             std::ptr::null_mut(),
