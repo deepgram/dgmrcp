@@ -32,7 +32,7 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
     };
     debug!("Parsed engine configuration");
 
-    let task_data = match TaskData::new(engine) {
+    let task_data = match TaskData::new(config.clone()) {
         Ok(data) => data,
         Err(err) => {
             error!("failed to spawn task: {}", err);
@@ -137,14 +137,14 @@ impl Engine {
 }
 
 struct TaskData {
-    engine: *mut ffi::mrcp_engine_t,
+    config: Config,
     thread_handle: std::thread::JoinHandle<()>,
     runtime_handle: tokio::runtime::Handle,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl TaskData {
-    fn new(engine: *mut ffi::mrcp_engine_t) -> Result<Self, Error> {
+    fn new(config: Config) -> Result<Self, Error> {
         debug!("TaskData::new {:?}", std::thread::current());
 
         let mut runtime = tokio::runtime::Runtime::new().map_err(|_| Error::Initialization)?;
@@ -166,7 +166,7 @@ impl TaskData {
             .map_err(|_| Error::Initialization)?;
 
         Ok(TaskData {
-            engine,
+            config,
             thread_handle,
             runtime_handle,
             shutdown,
@@ -175,8 +175,7 @@ impl TaskData {
 
     /// Get a reference to the engine's config.
     fn config(&self) -> &Config {
-        let engine = unsafe { &*((*self.engine).obj as *mut Engine) };
-        engine.config()
+        &self.config
     }
 
     fn process_message(&self, msg: Message) {
