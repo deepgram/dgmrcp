@@ -1,6 +1,6 @@
-use crate::{channel::Channel, error::Error, ffi, helper::*, message::*, pool::Pool};
+use crate::{channel::Channel, error::Error, ffi, helper::*, pool::Pool};
 use serde::Deserialize;
-use std::{ffi::CStr, mem};
+use std::{ffi::CStr, mem, sync::Arc};
 
 static RECOG_ENGINE_TASK_NAME: &[u8] = b"DG ASR Engine\0";
 
@@ -12,7 +12,7 @@ pub static ENGINE_VTABLE: ffi::mrcp_engine_method_vtable_t = ffi::mrcp_engine_me
     create_channel: Some(engine_create_channel),
 };
 
-unsafe extern "C" fn engine_destroy(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
+unsafe extern "C" fn engine_destroy(_engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
     ffi::TRUE
 }
 
@@ -30,9 +30,10 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
             return ffi::FALSE;
         }
     };
+    let config = Arc::new(config);
     debug!("Parsed engine configuration");
 
-    let task_data = match TaskData::new(config.clone()) {
+    let task_data = match TaskData::new() {
         Ok(data) => data,
         Err(err) => {
             error!("failed to spawn task: {}", err);
@@ -42,7 +43,10 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
     let runtime_handle = task_data.runtime_handle.clone();
     let task_data = pool.palloc(task_data);
 
-    let msg_pool = ffi::apt_task_msg_pool_create_dynamic(mem::size_of::<Message>(), pool.get());
+    let msg_pool = ffi::apt_task_msg_pool_create_dynamic(
+        mem::size_of::<crate::channel::Message>(),
+        pool.get(),
+    );
     let consumer_task = dbg!(ffi::apt_consumer_task_create(
         task_data as *mut _,
         msg_pool,
@@ -98,9 +102,9 @@ unsafe extern "C" fn engine_create_channel(
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
-    brain_url: url::Url,
-    brain_username: String,
-    brain_password: String,
+    pub brain_url: url::Url,
+    pub brain_username: String,
+    pub brain_password: String,
     #[serde(default = "Config::default_chunk_size")]
     pub chunk_size: u64,
     #[serde(default)]
@@ -127,24 +131,17 @@ pub struct Engine {
 
     pub runtime_handle: tokio::runtime::Handle,
 
-    pub config: Config,
-}
-
-impl Engine {
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
+    pub config: Arc<Config>,
 }
 
 struct TaskData {
-    config: Config,
     thread_handle: std::thread::JoinHandle<()>,
     runtime_handle: tokio::runtime::Handle,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl TaskData {
-    fn new(config: Config) -> Result<Self, Error> {
+    fn new() -> Result<Self, Error> {
         debug!("TaskData::new {:?}", std::thread::current());
 
         let mut runtime = tokio::runtime::Runtime::new().map_err(|_| Error::Initialization)?;
@@ -166,186 +163,10 @@ impl TaskData {
             .map_err(|_| Error::Initialization)?;
 
         Ok(TaskData {
-            config,
             thread_handle,
             runtime_handle,
             shutdown,
         })
-    }
-
-    /// Get a reference to the engine's config.
-    fn config(&self) -> &Config {
-        &self.config
-    }
-
-    fn process_message(&self, msg: Message) {
-        match msg.message_type {
-            MessageType::Open {
-                rx,
-                sample_rate,
-                channels,
-            } => {
-                let config = self.config();
-
-                let auth = format!("{}:{}", config.brain_username, config.brain_password);
-
-                let mut url = config.brain_url.join("listen/stream").unwrap();
-                // TODO: Perhaps these should not be hardcoded?
-                url.query_pairs_mut()
-                    .append_pair("endpointing", "true")
-                    .append_pair("interim_results", "true")
-                    .append_pair("encoding", "linear16")
-                    .append_pair("sample_rate", &sample_rate.to_string())
-                    .append_pair("channels", &channels.to_string());
-
-                info!("Building request to {}", url);
-
-                let req = http::Request::builder()
-                    .uri(url.as_str())
-                    .header("Authorization", format!("Basic {}", base64::encode(auth)))
-                    .body(())
-                    .unwrap();
-
-                // TODO: This feels wrong.
-                #[derive(Clone, Copy)]
-                struct SendPtr<T>(*mut T);
-                unsafe impl<T> Send for SendPtr<T> {}
-
-                let channel = SendPtr(msg.channel.as_ptr());
-
-                self.runtime_handle.spawn(async move {
-                    info!("Opening websocket connection");
-                    let result = match tokio_tungstenite::connect_async(req).await {
-                        Ok((socket, response)) => {
-                            use futures::prelude::*;
-                            info!("Opened websocket connection :: {:?}", response);
-
-                            tokio::spawn(async move {
-                                let (mut ws_tx, mut ws_rx) = socket.split();
-                                let mut rx = rx;
-                                let write = async {
-                                    info!("Begin writing to websocket");
-
-                                    while let Some(msg) = rx.next().await {
-                                        if let Err(err) = ws_tx.send(msg).await {
-                                            warn!("Websocket connection closed: {}", err);
-                                        }
-                                    }
-
-                                    let end = tungstenite::Message::Binary(vec![]);
-                                    if let Err(err) = ws_tx.send(end).await {
-                                        warn!("Websocket connection closed: {}", err);
-                                    }
-
-                                    info!("Done writing to websocket");
-                                };
-                                let read = async move {
-                                    while let Some(msg) = ws_rx.next().await {
-                                        trace!("received ws msg: {:?}", msg);
-
-                                        let msg = match msg {
-                                            Ok(msg) => msg,
-                                            Err(tungstenite::Error::ConnectionClosed) => break,
-                                            Err(err) => {
-                                                warn!("WebSocket error: {}", err);
-                                                continue;
-                                            }
-                                        };
-
-                                        #[derive(Deserialize)]
-                                        #[serde(untagged)]
-                                        enum Message {
-                                            Results(crate::stem::StreamingResponse),
-                                            Summary(crate::stem::Summary),
-                                        }
-
-                                        match msg {
-                                            tungstenite::Message::Close(_) => {
-                                                info!("Websocket is closing");
-                                                break;
-                                            }
-                                            tungstenite::Message::Text(buf) => {
-                                                let msg: Message =
-                                                    match serde_json::from_str(&buf) {
-                                                        Ok(msg) => msg,
-                                                        Err(err) => {
-                                                            warn!("Failed to deserialize streaming response: {}", err);
-                                                            debug!("{}", buf);
-                                                            continue;
-                                                        }
-                                                    };
-
-                                                let channel = unsafe { &mut *((*channel.0).method_obj as *mut Channel) };
-                                                match msg {
-                                                    Message::Results(msg) => channel.results_available(msg),
-                                                    Message::Summary(msg) => channel.results_summary(msg),
-                                                }
-                                            }
-                                            _ => warn!("Unhandled WS message type"),
-                                        }
-                                    }
-                                };
-
-                                future::join(write, read).await;
-                                drop(ws_tx);
-                            });
-
-                            true
-                        }
-                        Err(err) => {
-                            error!("Failed to open websocket connection: {}", err);
-                            false
-                        }
-                    };
-                });
-            }
-            MessageType::Close => unsafe {
-                mrcp_engine_channel_close_respond(msg.channel.as_ptr());
-            },
-            MessageType::RequestProcess { request } => {
-                let mut channel = msg.channel;
-
-                let method_id = unsafe { request.as_ref().start_line.method_id as u32 };
-
-                // TODO: Consider using ptr::NonNull here.
-                let response =
-                    unsafe { ffi::mrcp_response_create(request.as_ptr(), request.as_ref().pool) };
-                let processed = match method_id {
-                    ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => unsafe {
-                        crate::channel::recognize_channel(
-                            channel.as_mut(),
-                            request.as_ptr(),
-                            response,
-                        ) != 0
-                    },
-                    ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
-                        {
-                            let channel =
-                                unsafe { &mut *(channel.as_ref().method_obj as *mut Channel) };
-                            channel.timers_started = ffi::TRUE;
-                        }
-                        unsafe { mrcp_engine_channel_message_send(channel.as_ptr(), response) != 0 }
-                    }
-                    ffi::mrcp_recognizer_method_id::RECOGNIZER_STOP => {
-                        info!("Received STOP message");
-                        let channel =
-                            unsafe { &mut *(channel.as_ref().method_obj as *mut Channel) };
-                        channel.stop_response = Some(response);
-                        false
-                    }
-                    // TODO: These are probably useful to implement.
-                    ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => false,
-                    ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => false,
-                    _ => false,
-                };
-
-                if !processed {
-                    unsafe {
-                        mrcp_engine_channel_message_send(channel.as_ptr(), response);
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -380,30 +201,27 @@ unsafe extern "C" fn task_destroy(task: *mut ffi::apt_task_t) -> ffi::apt_bool_t
 /// this function needs call the associated `Message` object's `drop`
 /// function.
 unsafe extern "C" fn task_process_msg(
-    task: *mut ffi::apt_task_t,
+    _task: *mut ffi::apt_task_t,
     msg: *mut ffi::apt_task_msg_t,
 ) -> ffi::apt_bool_t {
     debug!("Message processing...");
-
-    let consumer_task = ffi::apt_task_object_get(task) as *mut ffi::apt_consumer_task_t;
-    let task_data = ffi::apt_consumer_task_object_get(consumer_task) as *mut TaskData;
-    let task_data = &mut *task_data;
 
     // Move the contents pointed to by the `Message` pointer onto the
     // stack. The stack allocated `Message` will be dropped by this
     // Rust plugin, and the heap memory owned by the `apt_task_msg_t`
     // will be freed by the UniMRCP runtime after this function
     // returns.
-    let msg = std::ptr::read(&(*msg).data as *const _ as *const Message);
+    let msg = std::ptr::read(&(*msg).data as *const _ as *const crate::channel::Message);
 
-    task_data.process_message(msg);
+    let channel = &mut *(msg.channel.as_ref().method_obj as *mut Channel);
+    channel.process_message(msg);
 
     ffi::TRUE
 }
 
 /// Log in to the Brain service, returning an HTTP client
 /// preconfigured with JWT auth credentials.
-async fn login(config: Config) -> Result<reqwest::Client, Error> {
+async fn login(config: Arc<Config>) -> Result<reqwest::Client, Error> {
     let client = reqwest::Client::builder().cookie_store(true).build()?;
 
     let base_url = reqwest::Url::parse(config.brain_url.as_str())?;
@@ -428,7 +246,10 @@ async fn login(config: Config) -> Result<reqwest::Client, Error> {
     let response: Response = client
         .post(endpoint)
         .header("x-xsrf-token", response.token)
-        .basic_auth(config.brain_username, Some(config.brain_password))
+        .basic_auth(
+            config.brain_username.as_str(),
+            Some(config.brain_password.as_str()),
+        )
         .send()
         .await?
         .error_for_status()?

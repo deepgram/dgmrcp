@@ -35,7 +35,6 @@ pub mod error;
 pub mod frame;
 pub mod helper;
 pub mod logging;
-pub mod message;
 pub mod pool;
 pub mod stem;
 pub mod stream;

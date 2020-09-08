@@ -1,35 +1,56 @@
 use crate::{
-    engine::Engine,
+    engine::{Config, Engine},
     error::Error,
     ffi,
     helper::*,
-    message::*,
     pool::Pool,
     stem::{StreamingResponse, Summary},
     stream::STREAM_VTABLE,
 };
 use bytes::BytesMut;
 use itertools::Itertools;
+use serde::Deserialize;
 use std::{
     ffi::{CStr, CString},
     ptr::NonNull,
+    sync::Arc,
 };
 use tokio::sync::mpsc;
 use xml::writer::XmlEvent;
 
 #[repr(C)]
 pub struct Channel {
-    pub engine: *mut Engine,
+    engine: *mut Engine,
     pub channel: NonNull<ffi::mrcp_engine_channel_t>,
     pub recog_request: Option<*mut ffi::mrcp_message_t>,
     pub stop_response: Option<*mut ffi::mrcp_message_t>,
     pub timers_started: ffi::apt_bool_t,
     pub detector: Option<*mut ffi::mpf_activity_detector_t>,
-    pub sink: Option<mpsc::Sender<tungstenite::Message>>,
-    pub results: Vec<StreamingResponse>,
+    sink: Option<mpsc::Sender<tungstenite::Message>>,
+    results: Vec<StreamingResponse>,
     pub buffer: BytesMut,
-    pub chunk_size: usize,
-    pub completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
+    chunk_size: usize,
+    completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
+    runtime_handle: tokio::runtime::Handle,
+    config: Arc<Config>,
+}
+
+pub struct Message {
+    pub channel: NonNull<ffi::mrcp_engine_channel_t>,
+    message_type: MessageType,
+}
+
+#[derive(Debug)]
+enum MessageType {
+    Open {
+        rx: mpsc::Receiver<tungstenite::Message>,
+        sample_rate: u16,
+        channels: u8,
+    },
+    Close,
+    RequestProcess {
+        request: NonNull<ffi::mrcp_message_t>,
+    },
 }
 
 impl Channel {
@@ -43,7 +64,7 @@ impl Channel {
         // ffi::mrcp_engine_t` and `*mut Engine`, and so they need to
         // be named differently.
         let engine_obj: &Engine = unsafe { &*((*engine).obj as *const _) };
-        let config = engine_obj.config();
+        let config = engine_obj.config.clone();
 
         let data = Self {
             engine: unsafe { *engine }.obj as *mut _,
@@ -58,6 +79,8 @@ impl Channel {
             buffer: BytesMut::new(),
             chunk_size: config.chunk_size as usize,
             completion_cause: None,
+            runtime_handle: engine_obj.runtime_handle.clone(),
+            config,
         };
         let data = pool.palloc(data);
 
@@ -101,6 +124,181 @@ impl Channel {
         Ok(channel)
     }
 
+    // TODO: Since this is called from the task thread, it's possible
+    // that it could create a race condition with the stream
+    // thread. Therefore, we might not want to take `self` as a
+    // mutable reference.
+    pub fn process_message(&mut self, msg: Message) {
+        match msg.message_type {
+            MessageType::Open {
+                rx,
+                sample_rate,
+                channels,
+            } => {
+                let auth = format!(
+                    "{}:{}",
+                    self.config.brain_username, self.config.brain_password
+                );
+
+                let mut url = self.config.brain_url.join("listen/stream").unwrap();
+                // TODO: Perhaps these should not be hardcoded?
+                url.query_pairs_mut()
+                    .append_pair("endpointing", "true")
+                    .append_pair("interim_results", "true")
+                    .append_pair("encoding", "linear16")
+                    .append_pair("sample_rate", &sample_rate.to_string())
+                    .append_pair("channels", &channels.to_string());
+
+                info!("Building request to {}", url);
+
+                let req = http::Request::builder()
+                    .uri(url.as_str())
+                    .header("Authorization", format!("Basic {}", base64::encode(auth)))
+                    .body(())
+                    .unwrap();
+
+                // TODO: This feels wrong.
+                #[derive(Clone, Copy)]
+                struct SendPtr<T>(*mut T);
+                unsafe impl<T> Send for SendPtr<T> {}
+
+                let channel = SendPtr(msg.channel.as_ptr());
+
+                self.runtime_handle.spawn(async move {
+                    info!("Opening websocket connection");
+                    let result = match tokio_tungstenite::connect_async(req).await {
+                        Ok((socket, response)) => {
+                            use futures::prelude::*;
+                            info!("Opened websocket connection :: {:?}", response);
+
+                            tokio::spawn(async move {
+                                let (mut ws_tx, mut ws_rx) = socket.split();
+                                let mut rx = rx;
+                                let write = async {
+                                    info!("Begin writing to websocket");
+
+                                    while let Some(msg) = rx.next().await {
+                                        if let Err(err) = ws_tx.send(msg).await {
+                                            warn!("Websocket connection closed: {}", err);
+                                        }
+                                    }
+
+                                    let end = tungstenite::Message::Binary(vec![]);
+                                    if let Err(err) = ws_tx.send(end).await {
+                                        warn!("Websocket connection closed: {}", err);
+                                    }
+
+                                    info!("Done writing to websocket");
+                                };
+                                let read = async move {
+                                    while let Some(msg) = ws_rx.next().await {
+                                        trace!("received ws msg: {:?}", msg);
+
+                                        let msg = match msg {
+                                            Ok(msg) => msg,
+                                            Err(tungstenite::Error::ConnectionClosed) => break,
+                                            Err(err) => {
+                                                warn!("WebSocket error: {}", err);
+                                                continue;
+                                            }
+                                        };
+
+                                        #[derive(Deserialize)]
+                                        #[serde(untagged)]
+                                        enum Message {
+                                            Results(crate::stem::StreamingResponse),
+                                            Summary(crate::stem::Summary),
+                                        }
+
+                                        match msg {
+                                            tungstenite::Message::Close(_) => {
+                                                info!("Websocket is closing");
+                                                break;
+                                            }
+                                            tungstenite::Message::Text(buf) => {
+                                                let msg: Message =
+                                                    match serde_json::from_str(&buf) {
+                                                        Ok(msg) => msg,
+                                                        Err(err) => {
+                                                            warn!("Failed to deserialize streaming response: {}", err);
+                                                            debug!("{}", buf);
+                                                            continue;
+                                                        }
+                                                    };
+
+                                                let channel = unsafe { &mut *((*channel.0).method_obj as *mut Channel) };
+                                                match msg {
+                                                    Message::Results(msg) => channel.results_available(msg),
+                                                    Message::Summary(msg) => channel.results_summary(msg),
+                                                }
+                                            }
+                                            _ => warn!("Unhandled WS message type"),
+                                        }
+                                    }
+                                };
+
+                                future::join(write, read).await;
+                                drop(ws_tx);
+                            });
+
+                            true
+                        }
+                        Err(err) => {
+                            error!("Failed to open websocket connection: {}", err);
+                            false
+                        }
+                    };
+                });
+            }
+            MessageType::Close => unsafe {
+                mrcp_engine_channel_close_respond(msg.channel.as_ptr());
+            },
+            MessageType::RequestProcess { request } => {
+                let mut channel = msg.channel;
+
+                let method_id = unsafe { request.as_ref().start_line.method_id as u32 };
+
+                // TODO: Consider using ptr::NonNull here.
+                let response =
+                    unsafe { ffi::mrcp_response_create(request.as_ptr(), request.as_ref().pool) };
+                let processed = match method_id {
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => unsafe {
+                        crate::channel::recognize_channel(
+                            channel.as_mut(),
+                            request.as_ptr(),
+                            response,
+                        ) != 0
+                    },
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
+                        {
+                            let channel =
+                                unsafe { &mut *(channel.as_ref().method_obj as *mut Channel) };
+                            channel.timers_started = ffi::TRUE;
+                        }
+                        unsafe { mrcp_engine_channel_message_send(channel.as_ptr(), response) != 0 }
+                    }
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_STOP => {
+                        info!("Received STOP message");
+                        let channel =
+                            unsafe { &mut *(channel.as_ref().method_obj as *mut Channel) };
+                        channel.stop_response = Some(response);
+                        false
+                    }
+                    // TODO: These are probably useful to implement.
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => false,
+                    ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => false,
+                    _ => false,
+                };
+
+                if !processed {
+                    unsafe {
+                        mrcp_engine_channel_message_send(channel.as_ptr(), response);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn start_of_input(&mut self) -> bool {
         debug!("Start-of-input.");
         let message = unsafe {
@@ -139,9 +337,7 @@ impl Channel {
         if response.is_final {
             self.results.push(response);
 
-            let engine: &Engine = unsafe { &*(self.engine as *const _) };
-            let config = engine.config();
-            if config.stream_results {
+            if self.config.stream_results {
                 let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
                 match self.send_recognition_complete(cause) {
                     Ok(()) => self.results.clear(),
@@ -267,8 +463,7 @@ impl Channel {
         }
 
         if cause == ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS {
-            let engine: &Engine = unsafe { &*(self.engine as *const _) };
-            let plaintext_results = engine.config().plaintext_results;
+            let plaintext_results = self.config.plaintext_results;
 
             let body = match self.build_response(plaintext_results) {
                 Ok(body) => body,
@@ -316,7 +511,6 @@ impl Channel {
 
     pub fn flush(&mut self) -> Result<(), ()> {
         while self.buffer.len() >= self.chunk_size {
-            let handle = unsafe { &(*(*self).engine).runtime_handle };
             let sink = match self.sink.as_mut() {
                 Some(sink) => sink,
                 None => {
@@ -325,7 +519,7 @@ impl Channel {
                 }
             };
             let message = tungstenite::Message::binary(self.buffer.split().as_ref());
-            if let Err(err) = handle.block_on(sink.send(message)) {
+            if let Err(err) = self.runtime_handle.block_on(sink.send(message)) {
                 error!("failed to send buffer: {}", err);
                 return Err(());
             }
@@ -378,10 +572,9 @@ unsafe fn msg_signal(
     channel: NonNull<ffi::mrcp_engine_channel_t>,
 ) -> ffi::apt_bool_t {
     debug!("Message signal: {:?}", message_type);
-    debug!("msg_signal {:?}", std::thread::current());
     let channel_data = &mut *(channel.as_ref().method_obj as *mut Channel);
-    let engine = dbg!(channel_data.engine);
-    let task = dbg!(ffi::apt_consumer_task_base_get((*engine).task));
+    let engine = channel_data.engine;
+    let task = ffi::apt_consumer_task_base_get((*engine).task);
     let msg_ptr = ffi::apt_task_msg_get(task);
     if !msg_ptr.is_null() {
         let msg = &mut (*msg_ptr).data as *mut _ as *mut Message;
