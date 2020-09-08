@@ -50,7 +50,7 @@ impl Channel {
             recog_request: None,
             stop_response: None,
             detector: Some(unsafe { ffi::mpf_activity_detector_create(pool.get()) }),
-            timers_started: ffi::FALSE as i32,
+            timers_started: ffi::FALSE,
             // This will be set before the end of this function.
             channel: NonNull::dangling(),
             sink: None,
@@ -395,7 +395,7 @@ unsafe fn msg_signal(
 
         ffi::apt_task_msg_signal(task, msg_ptr)
     } else {
-        ffi::FALSE as i32
+        ffi::FALSE
     }
 }
 
@@ -412,7 +412,7 @@ pub(crate) unsafe fn recognize_channel(
         warn!("Failed to get codec description.");
         (*response).start_line.status_code =
             ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
-        return ffi::FALSE as i32;
+        return ffi::FALSE;
     }
 
     recog_channel.timers_started = ffi::TRUE;
@@ -455,7 +455,7 @@ pub(crate) unsafe fn recognize_channel(
     let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel as *mut _);
     if codec_descriptor.is_null() {
         error!("Failed to get codec descriptor");
-        return ffi::FALSE as ffi::apt_bool_t;
+        return ffi::FALSE;
     }
     msg_signal(
         MessageType::Open {

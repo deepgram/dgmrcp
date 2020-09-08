@@ -144,11 +144,11 @@ pub unsafe fn apt_header_section_field_check(
 ) -> ffi::apt_bool_t {
     if id < (*header).arr_size {
         if (*(*header).arr.add(id)).is_null() {
-            ffi::FALSE as i32
+            ffi::FALSE
         } else {
             ffi::TRUE
         }
     } else {
-        ffi::FALSE as i32
+        ffi::FALSE
     }
 }

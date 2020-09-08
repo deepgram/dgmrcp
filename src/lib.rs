@@ -50,6 +50,7 @@ pub mod ffi {
     #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+    pub const FALSE: apt_bool_t = 0;
     pub const TRUE: apt_bool_t = 1;
 }
 

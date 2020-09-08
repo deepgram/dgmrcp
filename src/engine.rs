@@ -26,8 +26,8 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
         Ok(config) => config,
         Err(err) => {
             error!("Failed to parse config: {:?}", err);
-            mrcp_engine_open_respond(engine, ffi::FALSE as i32);
-            return ffi::FALSE as ffi::apt_bool_t;
+            mrcp_engine_open_respond(engine, ffi::FALSE);
+            return ffi::FALSE;
         }
     };
     debug!("Parsed engine configuration");
@@ -36,7 +36,7 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
         Ok(data) => data,
         Err(err) => {
             error!("failed to spawn task: {}", err);
-            return ffi::FALSE as ffi::apt_bool_t;
+            return ffi::FALSE;
         }
     };
     let runtime_handle = task_data.runtime_handle.clone();
@@ -49,7 +49,7 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
         pool.get()
     ));
     if consumer_task.is_null() {
-        return ffi::FALSE as ffi::apt_bool_t;
+        return ffi::FALSE;
     }
     let task = dbg!(ffi::apt_consumer_task_base_get(consumer_task));
     let c_str = CStr::from_bytes_with_nul_unchecked(RECOG_ENGINE_TASK_NAME);
@@ -57,7 +57,7 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
     let vtable = {
         let ptr = ffi::apt_task_vtable_get(task);
         if ptr.is_null() {
-            return ffi::FALSE as ffi::apt_bool_t;
+            return ffi::FALSE;
         }
         &mut *ptr
     };
