@@ -471,19 +471,3 @@ pub(crate) unsafe fn recognize_channel(
 
     mrcp_engine_channel_message_send(channel, response)
 }
-
-// #[derive(Serialize)]
-// struct Response {
-//     result: RecognizerResult,
-// }
-
-// #[derive(Serialize)]
-// struct RecognizerResult {
-//     interpretation: Interpretation,
-// }
-
-// #[derive(Serialize)]
-// struct Interpretation {
-//     instance: String,
-//     input: String,
-// }
