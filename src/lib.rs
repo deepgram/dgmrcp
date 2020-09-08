@@ -72,22 +72,14 @@ pub extern "C" fn mrcp_plugin_create(pool: *mut ffi::apr_pool_t) -> *mut ffi::mr
         Ok(()) => log::set_max_level(log::LevelFilter::max()),
     }
 
-    let mut pool = pool.into();
-
-    let engine = match engine::Engine::alloc(&mut pool) {
-        Ok(engine) => engine,
-        Err(err) => {
-            error!("{}", err);
-            return std::ptr::null_mut();
-        }
-    };
+    info!("plugin create");
 
     unsafe {
         ffi::mrcp_engine_create(
             ffi::mrcp_resource_type_e::MRCP_RECOGNIZER_RESOURCE as usize,
-            engine as *mut _,
+            std::ptr::null_mut(),
             &engine::ENGINE_VTABLE as *const _,
-            pool.get(),
+            pool,
         )
     }
 }

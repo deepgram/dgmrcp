@@ -316,13 +316,7 @@ impl Channel {
 
     pub fn flush(&mut self) -> Result<(), ()> {
         while self.buffer.len() >= self.chunk_size {
-            let handle = match unsafe { (*(*self).engine).runtime_handle.as_ref() } {
-                Some(handle) => handle,
-                None => {
-                    warn!("no runtime handle");
-                    return Err(());
-                }
-            };
+            let handle = unsafe { &(*(*self).engine).runtime_handle };
             let sink = match self.sink.as_mut() {
                 Some(sink) => sink,
                 None => {
@@ -384,9 +378,10 @@ unsafe fn msg_signal(
     channel: NonNull<ffi::mrcp_engine_channel_t>,
 ) -> ffi::apt_bool_t {
     debug!("Message signal: {:?}", message_type);
+    debug!("msg_signal {:?}", std::thread::current());
     let channel_data = &mut *(channel.as_ref().method_obj as *mut Channel);
-    let engine = channel_data.engine;
-    let task = ffi::apt_consumer_task_base_get((*engine).task.unwrap());
+    let engine = dbg!(channel_data.engine);
+    let task = dbg!(ffi::apt_consumer_task_base_get((*engine).task));
     let msg_ptr = ffi::apt_task_msg_get(task);
     if !msg_ptr.is_null() {
         let msg = &mut (*msg_ptr).data as *mut _ as *mut Message;
@@ -398,11 +393,6 @@ unsafe fn msg_signal(
             },
         );
 
-        // (*msg_ptr).type_ = ffi::apt_task_msg_type_e::TASK_MSG_USER as i32;
-        // let mut msg = &mut *(&mut (*msg_ptr).data as *mut _ as *mut Message);
-        // msg.message_type = message_type;
-        // msg.channel = channel_ptr;
-        // msg.request = request;
         ffi::apt_task_msg_signal(task, msg_ptr)
     } else {
         ffi::FALSE as i32

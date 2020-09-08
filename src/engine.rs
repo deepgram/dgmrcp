@@ -1,7 +1,6 @@
 use crate::{channel::Channel, error::Error, ffi, helper::*, message::*, pool::Pool};
 use serde::Deserialize;
-use std::ffi::CStr;
-use std::mem;
+use std::{ffi::CStr, mem};
 
 static RECOG_ENGINE_TASK_NAME: &[u8] = b"DG ASR Engine\0";
 
@@ -14,34 +13,77 @@ pub static ENGINE_VTABLE: ffi::mrcp_engine_method_vtable_t = ffi::mrcp_engine_me
 };
 
 unsafe extern "C" fn engine_destroy(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
-    Engine::map(engine, |engine| engine.destroy());
     ffi::TRUE
 }
 
 unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
-    let config = ffi::mrcp_engine_config_get(engine);
+    info!("engine open");
 
+    let mut pool = Pool::from((*engine).pool);
+
+    let config = ffi::mrcp_engine_config_get(engine);
     let config: Config = match crate::config::from_apr_table((*config).params) {
         Ok(config) => config,
         Err(err) => {
             error!("Failed to parse config: {:?}", err);
-            return mrcp_engine_open_respond(engine, ffi::FALSE as i32);
+            mrcp_engine_open_respond(engine, ffi::FALSE as i32);
+            return ffi::FALSE as ffi::apt_bool_t;
         }
     };
     debug!("Parsed engine configuration");
 
-    let response = match Engine::map(engine, |engine| engine.open(config)) {
-        Ok(()) => ffi::TRUE,
+    let task_data = match TaskData::new(engine) {
+        Ok(data) => data,
         Err(err) => {
-            error!("{:?}", err);
-            ffi::FALSE as i32
+            error!("failed to spawn task: {}", err);
+            return ffi::FALSE as ffi::apt_bool_t;
         }
     };
-    mrcp_engine_open_respond(engine, response)
+    let runtime_handle = task_data.runtime_handle.clone();
+    let task_data = pool.palloc(task_data);
+
+    let msg_pool = ffi::apt_task_msg_pool_create_dynamic(mem::size_of::<Message>(), pool.get());
+    let consumer_task = dbg!(ffi::apt_consumer_task_create(
+        task_data as *mut _,
+        msg_pool,
+        pool.get()
+    ));
+    if consumer_task.is_null() {
+        return ffi::FALSE as ffi::apt_bool_t;
+    }
+    let task = dbg!(ffi::apt_consumer_task_base_get(consumer_task));
+    let c_str = CStr::from_bytes_with_nul_unchecked(RECOG_ENGINE_TASK_NAME);
+    ffi::apt_task_name_set(task, c_str.as_ptr());
+    let vtable = {
+        let ptr = ffi::apt_task_vtable_get(task);
+        if ptr.is_null() {
+            return ffi::FALSE as ffi::apt_bool_t;
+        }
+        &mut *ptr
+    };
+    vtable.destroy = Some(task_destroy);
+    vtable.process_msg = Some(task_process_msg);
+    ffi::apt_task_start(task);
+
+    (*engine).obj = Box::into_raw(Box::new(Engine {
+        task: consumer_task,
+        runtime_handle,
+        config,
+    })) as *mut _;
+
+    info!("Opened engine");
+    mrcp_engine_open_respond(engine, ffi::TRUE)
 }
 
 unsafe extern "C" fn engine_close(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
-    Engine::map(engine, |engine| engine.close());
+    debug!("Closing the Deepgram ASR Engine");
+    {
+        let engine = Box::from_raw((*engine).obj as *mut Engine);
+        let task = ffi::apt_consumer_task_base_get(engine.task);
+        ffi::apt_task_terminate(task, ffi::TRUE);
+        ffi::apt_task_destroy(task);
+    }
+    (*engine).obj = std::ptr::null_mut();
     mrcp_engine_close_respond(engine)
 }
 
@@ -81,155 +123,30 @@ impl Config {
 /// The Deepgram ASR engine.
 #[repr(C)]
 pub struct Engine {
-    pub task: Option<*mut ffi::apt_consumer_task_t>,
+    pub task: *mut ffi::apt_consumer_task_t,
 
-    pub runtime_handle: Option<tokio::runtime::Handle>,
+    pub runtime_handle: tokio::runtime::Handle,
 
-    // TODO: Not sure where config should live.
-    pub config: Option<Config>,
+    pub config: Config,
 }
 
 impl Engine {
-    pub(crate) fn alloc(pool: &mut Pool) -> Result<*mut Engine, Error> {
-        info!("Constructing the Deepgram ASR Engine.");
-
-        let src = Self {
-            task: None,
-            runtime_handle: None,
-            config: None,
-        };
-        let ptr = pool.palloc(src);
-
-        let task_data = TaskData::new(ptr)?;
-        let runtime_handle = task_data.runtime_handle.clone();
-        let task_data = pool.palloc(task_data);
-        info!("task data ptr :: {:?}", task_data);
-
-        let msg_pool =
-            unsafe { ffi::apt_task_msg_pool_create_dynamic(mem::size_of::<Message>(), pool.get()) };
-        let task =
-            unsafe { ffi::apt_consumer_task_create(task_data as *mut _, msg_pool, pool.get()) };
-        if task.is_null() {
-            return Err(Error::Initialization);
-        }
-
-        unsafe { (*ptr).task = Some(task) };
-        unsafe { (*ptr).runtime_handle = Some(runtime_handle) };
-
-        let task = unsafe { ffi::apt_consumer_task_base_get(task) };
-        let c_str = unsafe { CStr::from_bytes_with_nul_unchecked(RECOG_ENGINE_TASK_NAME) };
-        unsafe { ffi::apt_task_name_set(task, c_str.as_ptr()) };
-        let vtable = {
-            let ptr = unsafe { ffi::apt_task_vtable_get(task) };
-            if ptr.is_null() {
-                return Err(Error::Initialization);
-            }
-            unsafe { &mut *ptr }
-        };
-        vtable.destroy = Some(task_destroy);
-        vtable.process_msg = Some(task_process_msg);
-
-        Ok(ptr)
-    }
-
-    pub(crate) fn map<F, T>(ptr: *mut ffi::mrcp_engine_t, func: F) -> T
-    where
-        F: FnOnce(&mut Engine) -> T,
-    {
-        let engine: &mut Engine = unsafe { &mut *((*ptr).obj as *mut _) };
-        func(&mut *engine)
-    }
-
-    fn destroy(&mut self) {
-        debug!("Destroying the Deepgram ASR engine.");
-        if let Some(task) = self.task.take() {
-            let task = unsafe { ffi::apt_consumer_task_base_get(task) };
-            unsafe {
-                ffi::apt_task_destroy(task);
-            }
-        }
-    }
-
-    fn open(&mut self, config: Config) -> Result<(), Error> {
-        debug!("Opening the Deepgram ASR Engine.");
-
-        // let mut headers = reqwest::header::HeaderMap::new();
-        // headers.insert(
-        //     reqwest::header::AUTHORIZATION,
-        //     format!(
-        //         "Basic {}",
-        //         base64::encode(format!(
-        //             "{}:{}",
-        //             config.brain_username, config.brain_password
-        //         ))
-        //     )
-        //     .parse()
-        //     .unwrap(),
-        // );
-        // let client = reqwest::Client::builder()
-        //     .default_headers(headers)
-        //     .build()?;
-        // let (tx, rx) = watch::channel(client);
-        // self.client = Some(rx);
-
-        // let cfg = config.clone();
-        // self.runtime.as_mut().unwrap().spawn(async move {
-        //     loop {
-        //         info!("Refreshing login token");
-        //         let duration = match login(cfg.clone()).await {
-        //             Ok(client) => match tx.broadcast(client) {
-        //                 Ok(()) => std::time::Duration::from_secs(30 * 60),
-        //                 Err(_) => break,
-        //             },
-        //             Err(err) => {
-        //                 error!("{}", err);
-        //                 std::time::Duration::from_secs(1 * 60)
-        //             }
-        //         };
-
-        //         tokio::time::delay_for(duration).await;
-        //     }
-        // });
-
-        self.config = Some(config);
-
-        if let Some(task) = self.task {
-            let task = unsafe { ffi::apt_consumer_task_base_get(task) };
-            unsafe {
-                ffi::apt_task_start(task);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn close(&mut self) {
-        debug!("Closing the Deepgram ASR Engine.");
-        if let Some(task) = self.task {
-            let task = unsafe { ffi::apt_consumer_task_base_get(task) };
-            unsafe {
-                ffi::apt_task_terminate(task, ffi::TRUE);
-            }
-        }
-
-        // Drop config.
-        self.config.take();
-    }
-
     pub fn config(&self) -> &Config {
-        self.config.as_ref().unwrap()
+        &self.config
     }
 }
 
 struct TaskData {
-    engine: *const Engine,
+    engine: *mut ffi::mrcp_engine_t,
     thread_handle: std::thread::JoinHandle<()>,
     runtime_handle: tokio::runtime::Handle,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl TaskData {
-    fn new(engine: *const Engine) -> Result<Self, Error> {
+    fn new(engine: *mut ffi::mrcp_engine_t) -> Result<Self, Error> {
+        debug!("TaskData::new {:?}", std::thread::current());
+
         let mut runtime = tokio::runtime::Runtime::new().map_err(|_| Error::Initialization)?;
         let runtime_handle = runtime.handle().clone();
 
@@ -258,8 +175,8 @@ impl TaskData {
 
     /// Get a reference to the engine's config.
     fn config(&self) -> &Config {
-        let engine = unsafe { &*self.engine };
-        engine.config.as_ref().unwrap()
+        let engine = unsafe { &*((*self.engine).obj as *mut Engine) };
+        engine.config()
     }
 
     fn process_message(&self, msg: Message) {
