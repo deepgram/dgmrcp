@@ -107,6 +107,7 @@ pub struct Config {
     pub stream_results: bool,
     #[serde(default)]
     pub plaintext_results: bool,
+    pub model: Option<String>,
     pub language: Option<String>,
 }
 

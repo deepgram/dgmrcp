@@ -47,6 +47,7 @@ enum MessageType {
         rx: mpsc::Receiver<tungstenite::Message>,
         sample_rate: u16,
         channels: u8,
+        model: Option<String>,
         language: Option<String>,
     },
     Close,
@@ -142,6 +143,7 @@ impl Channel {
                 rx,
                 sample_rate,
                 channels,
+                model,
                 language,
             } => {
                 let auth = format!(
@@ -157,6 +159,9 @@ impl Channel {
                     .append_pair("encoding", "linear16")
                     .append_pair("sample_rate", &sample_rate.to_string())
                     .append_pair("channels", &channels.to_string());
+                if let Some(model) = model {
+                    url.query_pairs_mut().append_pair("model", &model);
+                }
                 if let Some(language) = language {
                     url.query_pairs_mut().append_pair("language", &language);
                 }
@@ -696,6 +701,7 @@ unsafe fn recognize_channel(
             rx,
             sample_rate: (*codec_descriptor).sampling_rate,
             channels: (*codec_descriptor).channel_count,
+            model: recog_channel.config.model.clone(),
             // Use the most specific configured language, if
             // available.
             language: recognize_language
