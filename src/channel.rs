@@ -385,6 +385,21 @@ impl Channel {
                 }
             };
             let message = tungstenite::Message::binary(self.buffer.split().as_ref());
+
+            // Although this blocks on an async call, it should
+            // normally return very quickly. The only reason why it
+            // would block for a measurable length of time is if the
+            // mpsc channel is full. In that case, the UniMRCP stream
+            // callback will block.
+            //
+            // TODO: If we don't want to allow for blocked packets,
+            // thin it shouldn't really matter where we block. If we
+            // do want to allow for dropped packets, then which is the
+            // better place to handle that? If we don't want dropped
+            // packets, but we also don't want to block here, then we
+            // should switch to an unbounded channel so that we we can
+            // enqueue messages from this thread, ensuring they are
+            // placed in the correct order.
             if let Err(err) = self.runtime_handle.block_on(sink.send(message)) {
                 error!("failed to send buffer: {}", err);
                 return Err(());
