@@ -551,7 +551,7 @@ unsafe fn recognize_channel(
 
     recog_channel.results.clear();
 
-    let (tx, rx) = mpsc::channel(8);
+    let (tx, rx) = mpsc::channel(1024);
     recog_channel.sink = Some(tx);
     let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel as *mut _);
     if codec_descriptor.is_null() {
