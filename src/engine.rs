@@ -1,8 +1,6 @@
-use crate::{channel::Channel, error::Error, ffi, helper::*, pool::Pool};
+use crate::{channel::Channel, error::Error, ffi, helper::*};
 use serde::Deserialize;
-use std::{ffi::CStr, mem, sync::Arc};
-
-static RECOG_ENGINE_TASK_NAME: &[u8] = b"DG ASR Engine\0";
+use std::sync::Arc;
 
 /// Define the engine v-table
 pub static ENGINE_VTABLE: ffi::mrcp_engine_method_vtable_t = ffi::mrcp_engine_method_vtable_t {
@@ -19,8 +17,6 @@ unsafe extern "C" fn engine_destroy(_engine: *mut ffi::mrcp_engine_t) -> ffi::ap
 unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
     info!("engine open");
 
-    let mut pool = Pool::from((*engine).pool);
-
     let config = ffi::mrcp_engine_config_get(engine);
     let config: Config = match crate::config::from_apr_table((*config).params) {
         Ok(config) => config,
@@ -33,42 +29,40 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
     let config = Arc::new(config);
     debug!("Parsed engine configuration");
 
-    let task_data = match TaskData::new() {
-        Ok(data) => data,
+    let mut runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
         Err(err) => {
-            error!("failed to spawn task: {}", err);
+            error!("failed to create runtime: {}", err);
             return ffi::FALSE;
         }
     };
-    let runtime_handle = task_data.runtime_handle.clone();
-    let task_data = pool.palloc(task_data);
+    let runtime_handle = runtime.handle().clone();
 
-    let msg_pool = ffi::apt_task_msg_pool_create_dynamic(
-        mem::size_of::<crate::channel::Message>(),
-        pool.get(),
-    );
-    let consumer_task = ffi::apt_consumer_task_create(task_data as *mut _, msg_pool, pool.get());
-    if consumer_task.is_null() {
-        return ffi::FALSE;
-    }
-    let task = ffi::apt_consumer_task_base_get(consumer_task);
-    let c_str = CStr::from_bytes_with_nul_unchecked(RECOG_ENGINE_TASK_NAME);
-    ffi::apt_task_name_set(task, c_str.as_ptr());
-    let vtable = {
-        let ptr = ffi::apt_task_vtable_get(task);
-        if ptr.is_null() {
+    let (shutdown, rx) = tokio::sync::oneshot::channel();
+    let thread_handle = match std::thread::Builder::new()
+        .name("DG ASR Engine".to_string())
+        .spawn(|| {
+            info!("starting tokio runtime");
+            runtime.block_on(async {
+                info!("started tokio runtime");
+                rx.await.ok();
+            });
+            info!("dropping tokio runtime");
+            drop(runtime);
+            info!("dropped tokio runtime");
+        }) {
+        Ok(handle) => handle,
+        Err(err) => {
+            error!("failed to spawn runtime thread: {}", err);
             return ffi::FALSE;
         }
-        &mut *ptr
     };
-    vtable.destroy = Some(task_destroy);
-    vtable.process_msg = Some(task_process_msg);
-    ffi::apt_task_start(task);
 
     (*engine).obj = Box::into_raw(Box::new(Engine {
-        task: consumer_task,
-        runtime_handle,
         config,
+        thread_handle,
+        runtime_handle,
+        shutdown,
     })) as *mut _;
 
     info!("Opened engine");
@@ -77,13 +71,13 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
 
 unsafe extern "C" fn engine_close(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bool_t {
     debug!("Closing the Deepgram ASR Engine");
-    {
-        let engine = Box::from_raw((*engine).obj as *mut Engine);
-        let task = ffi::apt_consumer_task_base_get(engine.task);
-        ffi::apt_task_terminate(task, ffi::TRUE);
-        ffi::apt_task_destroy(task);
-    }
+    let data = Box::from_raw((*engine).obj as *mut Engine);
     (*engine).obj = std::ptr::null_mut();
+
+    data.shutdown.send(()).ok();
+    info!("joining scheduler thread");
+    data.thread_handle.join().ok();
+    info!("joined scheduler thread");
     mrcp_engine_close_respond(engine)
 }
 
@@ -91,9 +85,15 @@ unsafe extern "C" fn engine_create_channel(
     engine: *mut ffi::mrcp_engine_t,
     pool: *mut ffi::apr_pool_t,
 ) -> *mut ffi::mrcp_engine_channel_t {
-    Channel::alloc(engine, &mut pool.into())
-        .expect("Failed to allocate the Deepgram MRCP engine channel.")
-        .as_ptr()
+    let data = &*((*engine).obj as *mut Engine);
+    Channel::alloc(
+        engine,
+        &mut pool.into(),
+        data.config.clone(),
+        data.runtime_handle.clone(),
+    )
+    .expect("Failed to allocate the Deepgram MRCP engine channel.")
+    .as_ptr()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -125,96 +125,10 @@ impl Config {
 /// The Deepgram ASR engine.
 #[repr(C)]
 pub struct Engine {
-    pub task: *mut ffi::apt_consumer_task_t,
-
-    pub runtime_handle: tokio::runtime::Handle,
-
-    pub config: Arc<Config>,
-}
-
-struct TaskData {
+    config: Arc<Config>,
     thread_handle: std::thread::JoinHandle<()>,
     runtime_handle: tokio::runtime::Handle,
     shutdown: tokio::sync::oneshot::Sender<()>,
-}
-
-impl TaskData {
-    fn new() -> Result<Self, Error> {
-        debug!("TaskData::new {:?}", std::thread::current());
-
-        let mut runtime = tokio::runtime::Runtime::new().map_err(|_| Error::Initialization)?;
-        let runtime_handle = runtime.handle().clone();
-
-        let (shutdown, rx) = tokio::sync::oneshot::channel();
-        let thread_handle = std::thread::Builder::new()
-            .name("DG Scheduler".to_string())
-            .spawn(|| {
-                info!("starting tokio runtime");
-                runtime.block_on(async {
-                    info!("started tokio runtime");
-                    rx.await.ok();
-                });
-                info!("dropping tokio runtime");
-                drop(runtime);
-                info!("dropped tokio runtime");
-            })
-            .map_err(|_| Error::Initialization)?;
-
-        Ok(TaskData {
-            thread_handle,
-            runtime_handle,
-            shutdown,
-        })
-    }
-}
-
-/// Destroy the task data.
-///
-/// # Safety
-///
-/// Note that this leaves the task data in an uninitialized state.
-unsafe extern "C" fn task_destroy(task: *mut ffi::apt_task_t) -> ffi::apt_bool_t {
-    info!("task destroy");
-
-    let consumer_task = ffi::apt_task_object_get(task) as *mut ffi::apt_consumer_task_t;
-    let data = ffi::apt_consumer_task_object_get(consumer_task) as *mut TaskData;
-
-    let TaskData {
-        thread_handle,
-        shutdown,
-        ..
-    } = std::ptr::read(data);
-
-    shutdown.send(()).ok();
-    info!("joining scheduler thread");
-    thread_handle.join().ok();
-    info!("joined scheduler thread");
-
-    ffi::TRUE
-}
-
-/// Process a message. This gets invoked by the UniMRCP runtime. Note
-/// that `msg` is valid when this function is called, but it is
-/// deallocated immediately after this function is returns. Therefore,
-/// this function needs call the associated `Message` object's `drop`
-/// function.
-unsafe extern "C" fn task_process_msg(
-    _task: *mut ffi::apt_task_t,
-    msg: *mut ffi::apt_task_msg_t,
-) -> ffi::apt_bool_t {
-    debug!("Message processing...");
-
-    // Move the contents pointed to by the `Message` pointer onto the
-    // stack. The stack allocated `Message` will be dropped by this
-    // Rust plugin, and the heap memory owned by the `apt_task_msg_t`
-    // will be freed by the UniMRCP runtime after this function
-    // returns.
-    let msg = std::ptr::read(&(*msg).data as *const _ as *const crate::channel::Message);
-
-    let channel = &mut *(msg.channel.as_ref().method_obj as *mut Channel);
-    channel.process_message(msg);
-
-    ffi::TRUE
 }
 
 /// Log in to the Brain service, returning an HTTP client
