@@ -75,7 +75,11 @@ impl Channel {
         let data = Channel {
             recog_request: None,
             stop_response: None,
-            detector: Some(unsafe { ffi::mpf_activity_detector_create(pool.get()) }),
+            detector: Some(unsafe {
+                let detector = ffi::mpf_activity_detector_create(pool.get());
+                ffi::mpf_activity_detector_level_set(detector, 8);
+                detector
+            }),
             timers_started: ffi::FALSE,
             // This will be set before the end of this function.
             channel: NonNull::dangling(),
