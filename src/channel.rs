@@ -108,16 +108,21 @@ impl Channel {
         }
     }
 
-    pub fn process_request(&mut self, request: NonNull<ffi::mrcp_message_t>) {
+    /// Process an MRCP request. This is called from
+    /// `channel_process_request` and is run on the tokio threadpool,
+    /// using `spawn_blocking`. Therefore, it is okay to block in this
+    /// function.
+    fn process_request(&mut self, request: NonNull<ffi::mrcp_message_t>) {
         let method_id = unsafe { request.as_ref().start_line.method_id as u32 };
 
         // TODO: Consider using ptr::NonNull here.
         let response =
             unsafe { ffi::mrcp_response_create(request.as_ptr(), request.as_ref().pool) };
         let processed = match method_id {
-            ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => unsafe {
-                recognize_channel(self.channel.as_mut(), request.as_ptr(), response) != 0
-            },
+            ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => {
+                self.recognize(request.as_ptr(), response);
+                false
+            }
             ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
                 self.timers_started = ffi::TRUE;
                 unsafe { mrcp_engine_channel_message_send(self.channel.as_ptr(), response) != 0 }
@@ -141,6 +146,226 @@ impl Channel {
                 mrcp_engine_channel_message_send(self.channel.as_ptr(), response);
             }
         }
+    }
+
+    fn recognize(&mut self, request: *mut ffi::mrcp_message_t, response: *mut ffi::mrcp_message_t) {
+        info!("Channel::recognize");
+
+        let response = unsafe { &mut *response };
+
+        let descriptor = unsafe { ffi::mrcp_engine_sink_stream_codec_get(self.channel.as_ptr()) };
+        if descriptor.is_null() {
+            warn!("Failed to get codec description.");
+            response.start_line.status_code =
+                ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+            return;
+        }
+
+        self.timers_started = ffi::FALSE;
+
+        let headers = unsafe { mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t };
+        if headers.is_null() {
+            warn!("Failed to get headers");
+            response.start_line.status_code =
+                ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+            return;
+        }
+
+        if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_START_INPUT_TIMERS,
+            )
+        } {
+            self.timers_started = unsafe { (*headers).start_input_timers };
+        }
+
+        if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT,
+            )
+        } {
+            if let Vad::UniMrcp(detector) = self.detector {
+                unsafe {
+                    ffi::mpf_activity_detector_noinput_timeout_set(
+                        detector.as_ptr(),
+                        (*headers).no_input_timeout,
+                    );
+                }
+            }
+        }
+
+        if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT,
+            )
+        } {
+            if let Vad::UniMrcp(detector) = self.detector {
+                unsafe {
+                    ffi::mpf_activity_detector_silence_timeout_set(
+                        detector.as_ptr(),
+                        (*headers).speech_complete_timeout,
+                    );
+                }
+            }
+        }
+
+        let recognize_language = if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
+            )
+        } {
+            unsafe { Some((*headers).speech_language.as_str()) }
+        } else {
+            None
+        };
+
+        // Clear the results from a previous RECOGNIZE request.
+        self.results.clear();
+
+        let (tx, mut rx) = mpsc::channel(1024);
+        self.sink = Some(tx);
+        let codec_descriptor =
+            unsafe { ffi::mrcp_engine_sink_stream_codec_get(self.channel.as_ptr()) };
+        if codec_descriptor.is_null() {
+            error!("Failed to get codec descriptor");
+            response.start_line.status_code =
+                ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+            return;
+        }
+
+        // Build the request
+
+        let auth = format!(
+            "{}:{}",
+            self.config.brain_username, self.config.brain_password
+        );
+        let mut url = self.config.brain_url.join("listen/stream").unwrap();
+        // TODO: Perhaps these should not be hardcoded?
+        url.query_pairs_mut()
+            .append_pair("endpointing", "true")
+            // TODO: The default value is 60 ms, but it's easier to
+            // test things with a large buffer. This should be
+            // configurable anyway.
+            .append_pair("vad_turnoff", "1000")
+            .append_pair("interim_results", "true")
+            .append_pair("encoding", "linear16")
+            .append_pair("sample_rate", unsafe {
+                &(*codec_descriptor).sampling_rate.to_string()
+            })
+            .append_pair("channels", unsafe {
+                &(*codec_descriptor).channel_count.to_string()
+            });
+        if let Some(model) = self.config.model.clone() {
+            url.query_pairs_mut().append_pair("model", &model);
+        }
+        if let Some(language) = recognize_language
+            .or(self.parameters.language.as_deref())
+            .or(self.config.language.as_deref())
+        {
+            url.query_pairs_mut().append_pair("language", language);
+        }
+
+        info!("Building request to {}", url);
+
+        let req = http::Request::builder()
+            .uri(url.as_str())
+            .header("Authorization", format!("Basic {}", base64::encode(auth)))
+            .body(())
+            .unwrap();
+
+        info!("Opening websocket connection");
+        let (socket, http_response) = match self
+            .runtime_handle
+            .block_on(tokio_tungstenite::connect_async(req))
+        {
+            Ok(pair) => pair,
+            Err(err) => {
+                error!("Failed to open WebSocket connection: {}", err);
+                // TODO: this is not the right response code.
+                response.start_line.status_code =
+                    ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+                return;
+            }
+        };
+
+        let (mut ws_tx, mut ws_rx) = socket.split();
+
+        let write = async move {
+            info!("Begin writing to websocket");
+
+            while let Some(msg) = rx.next().await {
+                if let Err(err) = ws_tx.send(msg).await {
+                    warn!("Websocket connection closed: {}", err);
+                }
+            }
+
+            let end = tungstenite::Message::Binary(vec![]);
+            if let Err(err) = ws_tx.send(end).await {
+                warn!("Websocket connection closed: {}", err);
+            }
+
+            drop(ws_tx);
+            info!("Done writing to websocket");
+        };
+
+        let channel = SendPtr::new(self.channel.as_ptr());
+        let read = async move {
+            while let Some(msg) = ws_rx.next().await {
+                trace!("received ws msg: {:?}", msg);
+
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    Err(tungstenite::Error::ConnectionClosed) => break,
+                    Err(err) => {
+                        warn!("WebSocket error: {}", err);
+                        continue;
+                    }
+                };
+
+                #[derive(Deserialize)]
+                #[serde(untagged)]
+                enum Message {
+                    Results(crate::stem::StreamingResponse),
+                    Summary(crate::stem::Summary),
+                }
+
+                match msg {
+                    tungstenite::Message::Close(_) => {
+                        info!("Websocket is closing");
+                        break;
+                    }
+                    tungstenite::Message::Text(buf) => {
+                        let msg: Message = match serde_json::from_str(&buf) {
+                            Ok(msg) => msg,
+                            Err(err) => {
+                                warn!("Failed to deserialize streaming response: {}", err);
+                                debug!("{}", buf);
+                                continue;
+                            }
+                        };
+
+                        let channel =
+                            unsafe { &mut *((*channel.get()).method_obj as *mut Channel) };
+                        match msg {
+                            Message::Results(msg) => channel.results_available(msg),
+                            Message::Summary(msg) => channel.results_summary(msg),
+                        }
+                    }
+                    _ => warn!("Unhandled WS message type"),
+                }
+            }
+        };
+
+        self.runtime_handle.spawn(future::join(write, read));
+
+        info!("handled RECOGNIZE request");
+        response.start_line.request_state =
+            ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
+        self.recog_request = Some(request);
     }
 
     pub fn start_of_input(&mut self) -> bool {
@@ -167,8 +392,9 @@ impl Channel {
     pub fn results_available(&mut self, response: StreamingResponse) {
         if response.is_final {
             info!(
-                "Results available (FINAL={}): {}",
+                "Results available (IS_FINAL={} SPEECH_FINAL={}): {}",
                 response.is_final,
+                response.speech_final,
                 response
                     .channel
                     .alternatives
@@ -176,6 +402,7 @@ impl Channel {
                     .map(|alt| alt.transcript.as_str())
                     .unwrap_or("<< NO RESULTS >>")
             );
+        }
 
         match self.detector {
             Vad::Dg { ref mut speaking } => {
@@ -421,8 +648,7 @@ impl Channel {
                 request,
                 ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
             )
-        } == ffi::TRUE
-        {
+        } {
             let language = unsafe { headers.as_ref() }.speech_language.as_str();
             self.parameters.language = Some(language.to_string());
         }
@@ -480,216 +706,4 @@ unsafe extern "C" fn channel_process_request(
         });
 
     ffi::TRUE
-}
-
-unsafe fn recognize_channel(
-    channel: &mut ffi::mrcp_engine_channel_t,
-    request: *mut ffi::mrcp_message_t,
-    response: *mut ffi::mrcp_message_t,
-) -> ffi::apt_bool_t {
-    debug!("Channel recognize.");
-    let recog_channel = &mut *(channel.method_obj as *mut Channel);
-    let descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel as *mut _);
-
-    if descriptor.is_null() {
-        warn!("Failed to get codec description.");
-        (*response).start_line.status_code =
-            ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
-        return ffi::FALSE;
-    }
-
-    recog_channel.timers_started = ffi::TRUE;
-
-    let mut recognize_language = None;
-
-    let recog_header = mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t;
-    if !recog_header.is_null() {
-        if mrcp_resource_header_property_check(
-            request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_START_INPUT_TIMERS,
-        ) == ffi::TRUE
-        {
-            recog_channel.timers_started = (*recog_header).start_input_timers;
-        }
-        if mrcp_resource_header_property_check(
-            request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT,
-        ) == ffi::TRUE
-        {
-            if let Vad::UniMrcp(detector) = recog_channel.detector {
-                ffi::mpf_activity_detector_noinput_timeout_set(
-                    detector.as_ptr(),
-                    (*recog_header).no_input_timeout,
-                );
-            }
-        }
-        if mrcp_resource_header_property_check(
-            request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT,
-        ) == ffi::TRUE
-        {
-            if let Vad::UniMrcp(detector) = recog_channel.detector {
-                ffi::mpf_activity_detector_silence_timeout_set(
-                    detector.as_ptr(),
-                    (*recog_header).speech_complete_timeout,
-                );
-            }
-        }
-
-        if mrcp_resource_header_property_check(
-            request,
-            ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
-        ) == ffi::TRUE
-        {
-            recognize_language = Some((*recog_header).speech_language.as_str());
-        }
-    }
-
-    recog_channel.results.clear();
-
-    let (tx, rx) = mpsc::channel(1024);
-    recog_channel.sink = Some(tx);
-    let codec_descriptor = ffi::mrcp_engine_sink_stream_codec_get(channel as *mut _);
-    if codec_descriptor.is_null() {
-        error!("Failed to get codec descriptor");
-        return ffi::FALSE;
-    }
-
-    recog_channel.runtime_handle.spawn({
-        let config = recog_channel.config.clone();
-        let channel = SendPtr::new(channel);
-        let sample_rate = (*codec_descriptor).sampling_rate;
-        let channels = (*codec_descriptor).channel_count;
-        let model = recog_channel.config.model.clone();
-        // Use the most specific configured language, if
-        // available.
-        let language = recognize_language
-            .or(recog_channel.parameters.language.as_deref())
-            .or(recog_channel.config.language.as_deref())
-            .map(|s| s.to_string());
-        run_request(config, channel, rx, sample_rate, channels, model, language)
-    });
-
-    (*response).start_line.request_state = ffi::mrcp_request_state_e::MRCP_REQUEST_STATE_INPROGRESS;
-    recog_channel.recog_request = Some(request);
-
-    mrcp_engine_channel_message_send(channel, response)
-}
-
-async fn run_request(
-    config: Arc<Config>,
-    channel: SendPtr<ffi::mrcp_engine_channel_t>,
-    mut rx: mpsc::Receiver<tungstenite::Message>,
-    sample_rate: u16,
-    channels: u8,
-    model: Option<String>,
-    language: Option<String>,
-) {
-    let auth = format!("{}:{}", config.brain_username, config.brain_password);
-
-    let mut url = config.brain_url.join("listen/stream").unwrap();
-    // TODO: Perhaps these should not be hardcoded?
-    url.query_pairs_mut()
-        .append_pair("endpointing", "true")
-        // TODO: The default value is 60 ms, but it's easier to test
-        // things with a large buffer. This should be configurable
-        // anyway.
-        .append_pair("vad_turnoff", "1000")
-        .append_pair("interim_results", "true")
-        .append_pair("encoding", "linear16")
-        .append_pair("sample_rate", &sample_rate.to_string())
-        .append_pair("channels", &channels.to_string());
-    if let Some(model) = model {
-        url.query_pairs_mut().append_pair("model", &model);
-    }
-    if let Some(language) = language {
-        url.query_pairs_mut().append_pair("language", &language);
-    }
-
-    info!("Building request to {}", url);
-
-    let req = http::Request::builder()
-        .uri(url.as_str())
-        .header("Authorization", format!("Basic {}", base64::encode(auth)))
-        .body(())
-        .unwrap();
-
-    info!("Opening websocket connection");
-    let (socket, response) = match tokio_tungstenite::connect_async(req).await {
-        Err(err) => {
-            error!("Failed to open websocket connection: {}", err);
-            // TODO: Send a response to this error.
-            return;
-        }
-        Ok(pair) => pair,
-    };
-    info!("Opened websocket connection :: {:?}", response);
-
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    let write = async {
-        info!("Begin writing to websocket");
-
-        while let Some(msg) = rx.next().await {
-            if let Err(err) = ws_tx.send(msg).await {
-                warn!("Websocket connection closed: {}", err);
-            }
-        }
-
-        let end = tungstenite::Message::Binary(vec![]);
-        if let Err(err) = ws_tx.send(end).await {
-            warn!("Websocket connection closed: {}", err);
-        }
-
-        drop(ws_tx);
-        info!("Done writing to websocket");
-    };
-    let read = async move {
-        while let Some(msg) = ws_rx.next().await {
-            trace!("received ws msg: {:?}", msg);
-
-            let msg = match msg {
-                Ok(msg) => msg,
-                Err(tungstenite::Error::ConnectionClosed) => break,
-                Err(err) => {
-                    warn!("WebSocket error: {}", err);
-                    continue;
-                }
-            };
-
-            #[derive(Deserialize)]
-            #[serde(untagged)]
-            enum Message {
-                Results(crate::stem::StreamingResponse),
-                Summary(crate::stem::Summary),
-            }
-
-            match msg {
-                tungstenite::Message::Close(_) => {
-                    info!("Websocket is closing");
-                    break;
-                }
-                tungstenite::Message::Text(buf) => {
-                    let msg: Message = match serde_json::from_str(&buf) {
-                        Ok(msg) => msg,
-                        Err(err) => {
-                            warn!("Failed to deserialize streaming response: {}", err);
-                            debug!("{}", buf);
-                            continue;
-                        }
-                    };
-
-                    let channel = unsafe { &mut *((*channel.get()).method_obj as *mut Channel) };
-                    match msg {
-                        Message::Results(msg) => channel.results_available(msg),
-                        Message::Summary(msg) => channel.results_summary(msg),
-                    }
-                }
-                _ => warn!("Unhandled WS message type"),
-            }
-        }
-    };
-
-    future::join(write, read).await;
-
-    info!("request complete");
 }
