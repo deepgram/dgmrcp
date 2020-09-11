@@ -91,36 +91,43 @@ impl Stream {
             return true;
         }
 
-        match unsafe {
-            ffi::mpf_activity_detector_process(recog_channel.detector.unwrap(), frame.get())
-        } {
-            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
-                debug!("Detected voice activity.");
-                recog_channel.start_of_input();
-            }
-            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
-                debug!("Detected voice inactivity.");
-                if let Err(_) = recog_channel.flush() {
-                    return false;
+        match recog_channel.detector {
+            crate::channel::Vad::UniMrcp(detector) => {
+                match unsafe { ffi::mpf_activity_detector_process(detector.as_ptr(), frame.get()) }
+                {
+                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
+                        debug!("Detected voice activity.");
+                        recog_channel.start_of_input();
+                    }
+                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
+                        debug!("Detected voice inactivity.");
+                        if let Err(_) = recog_channel.flush() {
+                            return false;
+                        }
+                        recog_channel.end_of_input(
+                            ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                        );
+                    }
+                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
+                        debug!("Detected no input.");
+                        if let Err(_) = recog_channel.flush() {
+                            return false;
+                        }
+                        if recog_channel.timers_started == ffi::TRUE {
+                            recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
+                        }
+                        recog_channel.end_of_input(
+                            ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                        );
+                    }
+                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
+                    event => warn!("unhandled event type: {}", event),
                 }
-                recog_channel.end_of_input(
-                    ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                );
             }
-            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
-                debug!("Detected no input.");
-                if let Err(_) = recog_channel.flush() {
-                    return false;
-                }
-                if recog_channel.timers_started == ffi::TRUE {
-                    recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
-                }
-                recog_channel.end_of_input(
-                    ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                );
-            }
-            ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
-            event => warn!("unhandled event type: {}", event),
+
+            // Do nothing; events are handled when results are
+            // received.
+            crate::channel::Vad::Dg { .. } => (),
         }
 
         if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)

@@ -9,6 +9,7 @@ pub struct StreamingResponse {
     pub start: f32,
     pub is_final: bool,
     pub channel: Channel,
+    pub speech_final: bool,
 }
 
 #[derive(Debug, Deserialize)]

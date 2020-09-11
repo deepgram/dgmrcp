@@ -45,7 +45,7 @@ pub struct Channel {
     pub recog_request: Option<*mut ffi::mrcp_message_t>,
     pub stop_response: Option<*mut ffi::mrcp_message_t>,
     pub timers_started: ffi::apt_bool_t,
-    pub detector: Option<*mut ffi::mpf_activity_detector_t>,
+    pub detector: Vad,
     sink: Option<mpsc::Sender<tungstenite::Message>>,
     results: Vec<StreamingResponse>,
     pub buffer: BytesMut,
@@ -54,6 +54,11 @@ pub struct Channel {
     runtime_handle: tokio::runtime::Handle,
     config: Arc<Config>,
     parameters: Parameters,
+}
+
+pub enum Vad {
+    UniMrcp(NonNull<ffi::mpf_activity_detector_t>),
+    Dg { speaking: bool },
 }
 
 #[derive(Default)]
@@ -72,14 +77,20 @@ impl Channel {
     ) -> Result<NonNull<ffi::mrcp_engine_channel_t>, Error> {
         info!("Constructing a Deepgram ASR Engine Channel.");
 
+        let detector = if config.dg_vad {
+            Vad::Dg { speaking: false }
+        } else {
+            unsafe {
+                let detector = ffi::mpf_activity_detector_create(pool.get());
+                ffi::mpf_activity_detector_level_set(detector, 8);
+                Vad::UniMrcp(NonNull::new_unchecked(detector))
+            }
+        };
+
         let data = Channel {
             recog_request: None,
             stop_response: None,
-            detector: Some(unsafe {
-                let detector = ffi::mpf_activity_detector_create(pool.get());
-                ffi::mpf_activity_detector_level_set(detector, 8);
-                detector
-            }),
+            detector,
             timers_started: ffi::FALSE,
             // This will be set before the end of this function.
             channel: NonNull::dangling(),
@@ -202,6 +213,29 @@ impl Channel {
                     .map(|alt| alt.transcript.as_str())
                     .unwrap_or("<< NO RESULTS >>")
             );
+
+        match self.detector {
+            Vad::Dg { ref mut speaking } => {
+                if !*speaking
+                    && response
+                        .channel
+                        .alternatives
+                        .get(0)
+                        .map(|alt| !alt.transcript.is_empty())
+                        .unwrap_or(false)
+                {
+                    info!("speaking {} => true", speaking);
+                    *speaking = true;
+                    self.start_of_input();
+                } else if *speaking && response.speech_final {
+                    info!("speaking {} => false", speaking);
+                    *speaking = false;
+                    self.end_of_input(
+                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                    );
+                }
+            }
+            _ => (),
         }
 
         if response.is_final {
@@ -528,20 +562,24 @@ unsafe fn recognize_channel(
             ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT,
         ) == ffi::TRUE
         {
-            ffi::mpf_activity_detector_noinput_timeout_set(
-                recog_channel.detector.unwrap(),
-                (*recog_header).no_input_timeout,
-            );
+            if let Vad::UniMrcp(detector) = recog_channel.detector {
+                ffi::mpf_activity_detector_noinput_timeout_set(
+                    detector.as_ptr(),
+                    (*recog_header).no_input_timeout,
+                );
+            }
         }
         if mrcp_resource_header_property_check(
             request,
             ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT,
         ) == ffi::TRUE
         {
-            ffi::mpf_activity_detector_silence_timeout_set(
-                recog_channel.detector.unwrap(),
-                (*recog_header).speech_complete_timeout,
-            );
+            if let Vad::UniMrcp(detector) = recog_channel.detector {
+                ffi::mpf_activity_detector_silence_timeout_set(
+                    detector.as_ptr(),
+                    (*recog_header).speech_complete_timeout,
+                );
+            }
         }
 
         if mrcp_resource_header_property_check(
@@ -599,6 +637,10 @@ async fn run_request(
     // TODO: Perhaps these should not be hardcoded?
     url.query_pairs_mut()
         .append_pair("endpointing", "true")
+        // TODO: The default value is 60 ms, but it's easier to test
+        // things with a large buffer. This should be configurable
+        // anyway.
+        .append_pair("vad_turnoff", "1000")
         .append_pair("interim_results", "true")
         .append_pair("encoding", "linear16")
         .append_pair("sample_rate", &sample_rate.to_string())
