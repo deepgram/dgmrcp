@@ -1,6 +1,6 @@
 use crate::{channel::Channel, error::Error, ffi, helper::*};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::{ffi::CStr, ptr::NonNull, sync::Arc};
 
 /// Define the engine v-table
 pub static ENGINE_VTABLE: ffi::mrcp_engine_method_vtable_t = ffi::mrcp_engine_method_vtable_t {
@@ -86,14 +86,37 @@ unsafe extern "C" fn engine_create_channel(
     pool: *mut ffi::apr_pool_t,
 ) -> *mut ffi::mrcp_engine_channel_t {
     let data = &*((*engine).obj as *mut Engine);
-    Channel::alloc(
+
+    let channel_data = Channel::new(pool, data.config.clone(), data.runtime_handle.clone());
+    let channel_data = crate::pool::Pool::from(pool).palloc(channel_data);
+
+    let caps = mpf_sink_stream_capabilities_create(pool);
+    let codec: &CStr = CStr::from_bytes_with_nul_unchecked(b"LPCM\0");
+    mpf_codec_capabilities_add(
+        &mut (*caps).codecs as *mut _,
+        (ffi::mpf_sample_rates_e::MPF_SAMPLE_RATE_8000
+            | ffi::mpf_sample_rates_e::MPF_SAMPLE_RATE_16000) as i32,
+        codec.as_ptr(),
+    );
+
+    let termination = ffi::mrcp_engine_audio_termination_create(
+        channel_data as *mut _,
+        &crate::stream::STREAM_VTABLE,
+        caps,
+        pool,
+    );
+
+    let channel = ffi::mrcp_engine_channel_create(
         engine,
-        &mut pool.into(),
-        data.config.clone(),
-        data.runtime_handle.clone(),
-    )
-    .expect("Failed to allocate the Deepgram MRCP engine channel.")
-    .as_ptr()
+        &Channel::VTABLE,
+        channel_data as *mut _,
+        termination,
+        pool,
+    );
+
+    (*channel_data).channel = NonNull::new(channel).unwrap();
+
+    channel
 }
 
 #[derive(Clone, Debug, Deserialize)]

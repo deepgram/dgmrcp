@@ -1,11 +1,8 @@
 use crate::{
     engine::Config,
-    error::Error,
     ffi,
     helper::*,
-    pool::Pool,
     stem::{StreamingResponse, Summary},
-    stream::STREAM_VTABLE,
 };
 use bytes::BytesMut;
 use futures::prelude::*;
@@ -67,27 +64,33 @@ struct Parameters {
 }
 
 impl Channel {
-    pub(crate) fn alloc(
-        // TODO: Eliminate this parameter; move
-        // `mrcp_engine_channel_create` into engine.rs
-        engine: *mut ffi::mrcp_engine_t,
-        pool: &mut Pool,
+    /// Define the channel v-table
+    pub const VTABLE: ffi::mrcp_engine_channel_method_vtable_t =
+        ffi::mrcp_engine_channel_method_vtable_t {
+            destroy: Some(channel_destroy),
+            open: Some(channel_open),
+            close: Some(channel_close),
+            process_request: Some(channel_process_request),
+        };
+
+    pub fn new(
+        pool: *mut ffi::apr_pool_t,
         config: Arc<Config>,
         runtime_handle: tokio::runtime::Handle,
-    ) -> Result<NonNull<ffi::mrcp_engine_channel_t>, Error> {
+    ) -> Self {
         info!("Constructing a Deepgram ASR Engine Channel.");
 
         let detector = if config.dg_vad {
             Vad::Dg { speaking: false }
         } else {
             unsafe {
-                let detector = ffi::mpf_activity_detector_create(pool.get());
+                let detector = ffi::mpf_activity_detector_create(pool);
                 ffi::mpf_activity_detector_level_set(detector, 8);
                 Vad::UniMrcp(NonNull::new_unchecked(detector))
             }
         };
 
-        let data = Channel {
+        Channel {
             recog_request: None,
             stop_response: None,
             detector,
@@ -102,47 +105,7 @@ impl Channel {
             runtime_handle,
             config,
             parameters: Default::default(),
-        };
-        let data = pool.palloc(data);
-
-        let caps = unsafe { mpf_sink_stream_capabilities_create(pool.get()) };
-        let codec: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"LPCM\0") };
-        unsafe {
-            mpf_codec_capabilities_add(
-                &mut (*caps).codecs as *mut _,
-                (ffi::mpf_sample_rates_e::MPF_SAMPLE_RATE_8000
-                    | ffi::mpf_sample_rates_e::MPF_SAMPLE_RATE_16000) as i32,
-                codec.as_ptr(),
-            );
         }
-
-        let termination = unsafe {
-            ffi::mrcp_engine_audio_termination_create(
-                data as *mut _,
-                &STREAM_VTABLE,
-                caps,
-                pool.get(),
-            )
-        };
-
-        let channel = match NonNull::new(unsafe {
-            ffi::mrcp_engine_channel_create(
-                engine,
-                &CHANNEL_VTABLE,
-                data as *mut _,
-                termination,
-                pool.get(),
-            )
-        }) {
-            Some(ptr) => ptr,
-            None => return Err(Error::Initialization),
-        };
-
-        unsafe {
-            (*data).channel = channel;
-        }
-
-        Ok(channel)
     }
 
     pub fn process_request(&mut self, request: NonNull<ffi::mrcp_message_t>) {
@@ -467,15 +430,6 @@ impl Channel {
         Ok(())
     }
 }
-
-/// Define the engine v-table
-static CHANNEL_VTABLE: ffi::mrcp_engine_channel_method_vtable_t =
-    ffi::mrcp_engine_channel_method_vtable_t {
-        destroy: Some(channel_destroy),
-        open: Some(channel_open),
-        close: Some(channel_close),
-        process_request: Some(channel_process_request),
-    };
 
 unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Destroying Deepgram ASR channel.");
