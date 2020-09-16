@@ -53,12 +53,13 @@ dependencies, as well as build the server plugin.
 $ docker build -t dgmrcp .
 ```
 
-The server plugin can be copied out of the container by mounting a
-directory on your host and running the image to copy the binary:
+In order to extract the plugin, we need to create a container from the
+image, and then copy the shared object out:
 
 ```bash
-$ mkdir out
-$ docker run --rm -v $PWD/out:/out dgmrcp cp /dgmrcp/target/release/libdgmrcp.so /out/
+CONTAINER=$(docker create dgmrcp) \
+  && docker cp $CONTAINER:/dgmrcp/target/release/libdgmrcp.so ./ \
+  && docker rm $CONTAINER
 ```
 
 ## License

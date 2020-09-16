@@ -52,5 +52,4 @@ COPY native native
 COPY build.rs ./
 COPY src src
 RUN cargo build --release
-
-CMD ["/usr/local/unimrcp/bin/unimrcpserver"] #  -r /usr/local/unimrcp -o 2 -w"]
+RUN strip ./target/release/libdgmrcp.so
