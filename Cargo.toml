@@ -27,5 +27,3 @@ tokio-tungstenite = { version = "0.10", features = ["tls"] }
 tungstenite = { version = "0.10", features = ["tls"] }
 url = { version = "2.1", features = ["serde"] }
 xml-rs = "0.8"
-
-backtrace = "0.3"
