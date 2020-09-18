@@ -420,6 +420,12 @@ impl Channel {
 
                         let channel = match channel.upgrade() {
                             None => {
+                                // TODO: Should this really be an
+                                // error? It is actually very normal
+                                // to send `RECOGNITION-COMPLETE`,
+                                // close the channel, and _then_
+                                // receive few more results or a
+                                // summary message from the backend.
                                 error!("Channel has been deallocated");
                                 return;
                             }
@@ -530,15 +536,13 @@ impl Channel {
         // To fix this, we need to change the method_obj on the
         // UniMRCP channel to be a reference counted pointer instead
         // of a raw pointer.
-        /*
+
         if speech_final {
-            let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
-            match self.send_recognition_complete(cause) {
+            match self.send_recognition_complete() {
                 Ok(()) => self.results.clear(),
                 Err(()) => error!("Failed to send results"),
             }
         }
-         */
     }
 
     fn build_response(&self, plaintext_results: bool) -> xml::writer::Result<CString> {
@@ -623,6 +627,11 @@ impl Channel {
     pub fn send_recognition_complete(&mut self) -> Result<(), ()> {
         debug!("send recognition complete");
 
+        // If there isn't an active request, then that means we've
+        // already responded, and so we shouldn't respond a second
+        // time.
+        let recognize_request = self.recog_request.take().ok_or(())?;
+
         let cause = self
             .completion_cause
             .take()
@@ -630,9 +639,9 @@ impl Channel {
 
         let message = unsafe {
             ffi::mrcp_event_create(
-                self.recog_request.unwrap() as *const _,
+                recognize_request as *const _,
                 ffi::mrcp_recognizer_event_id::RECOGNIZER_RECOGNITION_COMPLETE as usize,
-                (*self.recog_request.unwrap()).pool,
+                (*recognize_request).pool,
             )
         };
 
