@@ -40,6 +40,7 @@ The following options can be specified:
 | brain_password | string (required) | API password or secret. |
 | model | string | The default ASR model to use. |
 | language | string | The default ASR language to use. |
+| sensitivity_level | float | The default VAD sensitivity level, between 0.0 and 1.0. |
 | plaintext_results | boolean | If `true`, then results in a `RECOGNITION-COMPLETE` message will be in plain text instead of the standard [NLSML](https://tools.ietf.org/html/rfc6787#section-6.3.1). Note that this does not conform to the MRCP specification, but it can be convenient for testing and development. |
 
 

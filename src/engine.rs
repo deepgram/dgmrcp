@@ -132,6 +132,7 @@ pub struct Config {
     pub plaintext_results: bool,
     pub model: Option<String>,
     pub language: Option<String>,
+    pub sensitivity_level: Option<f32>,
 }
 
 impl Config {

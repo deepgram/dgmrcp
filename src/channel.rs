@@ -74,6 +74,7 @@ pub struct Vad {
 #[derive(Default)]
 struct Parameters {
     language: Option<String>,
+    sensitivity_level: Option<f32>,
 }
 
 impl Channel {
@@ -86,6 +87,10 @@ impl Channel {
             process_request: Some(channel_process_request),
         };
 
+    // NOTE: This is a reasonable default that seems to work well with
+    // my phone. It will most likely have to be adjusted.
+    const DEFAULT_SENSITIVITY_LEVEL: f32 = 0.0625;
+
     pub fn new(
         pool: *mut ffi::apr_pool_t,
         config: Arc<Config>,
@@ -95,8 +100,6 @@ impl Channel {
 
         let detector = unsafe {
             let detector = ffi::mpf_activity_detector_create(pool);
-            // TODO: Initialize this from config or headers.
-            ffi::mpf_activity_detector_level_set(detector, 8);
             Vad {
                 speaking: false,
                 activity_detector: NonNull::new(detector),
@@ -232,19 +235,28 @@ impl Channel {
             }
         }
 
-        if unsafe {
+        let header_sensitivity = if unsafe {
             mrcp_resource_header_property_check(
                 request,
                 ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SENSITIVITY_LEVEL,
             )
         } {
-            if let Some(detector) = self.detector.activity_detector {
-                unsafe {
-                    // Invert and scale to [0, 255]; that is, 0.0 -> 255 and 1.0 -> 0
-                    let sensitivity = (*headers).sensitivity_level.max(0.0).min(1.0);
-                    let level = 255 - (sensitivity * 255.0) as usize;
-                    ffi::mpf_activity_detector_level_set(detector.as_ptr(), level);
-                }
+            unsafe { Some((*headers).sensitivity_level) }
+        } else {
+            None
+        };
+
+        let sensitivity = header_sensitivity
+            .or(self.parameters.sensitivity_level)
+            .or(self.config.sensitivity_level)
+            .unwrap_or(Channel::DEFAULT_SENSITIVITY_LEVEL);
+
+        if let Some(detector) = self.detector.activity_detector {
+            unsafe {
+                // Invert and scale to [0, 255]; that is, 0.0 -> 255 and 1.0 -> 0
+                let sensitivity = sensitivity.max(0.0).min(1.0);
+                let level = 255 - (sensitivity * 255.0) as usize;
+                ffi::mpf_activity_detector_level_set(detector.as_ptr(), level);
             }
         }
 
@@ -713,6 +725,16 @@ impl Channel {
         } {
             let language = unsafe { headers.as_ref() }.speech_language.as_str();
             self.parameters.language = Some(language.to_string());
+        }
+
+        if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SENSITIVITY_LEVEL,
+            )
+        } {
+            let level = unsafe { headers.as_ref() }.sensitivity_level;
+            self.parameters.sensitivity_level = Some(level);
         }
 
         Ok(())
