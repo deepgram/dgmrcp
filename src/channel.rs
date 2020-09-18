@@ -787,20 +787,50 @@ unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> 
     // casting back to an pointer to an `Arc` and then taking
     // ownership in a box.
     let mut channel = NonNull::new(channel).expect("channel ptr should never be null");
-    let channel_data = channel.as_mut().method_obj as *mut Arc<Mutex<Channel>>;
-    let channel_data = Box::from_raw(channel_data);
-    let mut channel_data = channel_data.lock().unwrap();
+    let channel_data = Box::from_raw(channel.as_mut().method_obj as *mut Arc<Mutex<Channel>>);
 
-    channel_data.sink.take();
+    // Simply dropping the Arc is not enough. It is possible that at
+    // the moment we dropped it, an existing weak reference had been
+    // upgraded, and that another thread is now keeping the data
+    // alive. Therefore, we spin here until we know that there are no
+    // outstanding strong references. Note that this could block, but
+    // it probably won't block for very long.
+    //
+    // Technically, we could run this loop in a separate thread to
+    // avoid blocking the UniMRCP engine, but we'd have to lock the
+    // mutex, clone the runtime handle, drop the guard, then pass
+    // ownership of the Arc into a newly spawned task.
+    let mut arc: Arc<Mutex<Channel>> = *channel_data;
+    let mutex = loop {
+        arc = match Arc::try_unwrap(arc) {
+            Ok(mutex) => break mutex,
+            Err(same_arc) => same_arc,
+        };
+        warn!("Couldn't close channel because there are additional strong pointers. Arc::strong_count() == {}", Arc::strong_count(&arc));
 
+        // Wait to acquire the lock before trying again. This isn't
+        // strictly necessary, but it avoids rapidly spinning the loop
+        // (assuming that the holder of the other Arc is also locking
+        // the mutex).
+        arc.lock().ok();
+    };
+
+    // Now that we know we have exclusive ownership of the channel
+    // data, we can safely notify the engine that we are ready to
+    // close, and then drop the data.
     let channel = SendPtr::new(channel.as_ptr());
+    mutex
+        .lock()
+        .unwrap()
+        .runtime_handle
+        .spawn_blocking(move || {
+            // This is safe because UniMRCP will not deallocate the
+            // channel until after the close response has been sent.
+            let channel = channel.get();
+            mrcp_engine_channel_close_respond(channel);
+        });
 
-    channel_data.runtime_handle.spawn_blocking(move || {
-        // This is safe because UniMRCP will not deallocate the
-        // channel until after the close response has been sent.
-        let channel = channel.get();
-        mrcp_engine_channel_close_respond(channel);
-    });
+    info!("Closed channel");
 
     ffi::TRUE
 }
