@@ -130,13 +130,6 @@ impl Stream {
                     if recog_channel.timers_started == ffi::TRUE {
                         recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
                     }
-
-                    // TODO: I don't think this is correct. This won't
-                    // properly support barge-in, because it'll time
-                    // out too early.
-                    recog_channel.end_of_input(
-                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                    );
                 }
                 ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
                 _ => warn!("unhandled event type: {}", event),

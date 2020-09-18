@@ -136,6 +136,11 @@ impl Channel {
                 self.recognize(request.as_ptr(), response);
             }
             ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
+                if let Some(detector) = self.detector.activity_detector {
+                    unsafe {
+                        ffi::mpf_activity_detector_reset(detector.as_ptr());
+                    }
+                }
                 self.timers_started = ffi::TRUE;
             }
             ffi::mrcp_recognizer_method_id::RECOGNIZER_STOP => {
@@ -171,6 +176,12 @@ impl Channel {
         }
 
         self.timers_started = ffi::FALSE;
+        self.detector.speaking = false;
+        if let Some(detector) = self.detector.activity_detector {
+            unsafe {
+                ffi::mpf_activity_detector_reset(detector.as_ptr());
+            }
+        }
 
         let headers = unsafe { mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t };
         if headers.is_null() {
@@ -437,11 +448,11 @@ impl Channel {
             .unwrap_or(false);
 
         if !self.detector.speaking && contains_speech {
-            trace!("speaking false => true");
+            info!("speaking false => true");
             self.detector.speaking = true;
             self.start_of_input();
         } else if self.detector.speaking && response.speech_final {
-            trace!("speaking true => false");
+            info!("speaking true => false");
             // TODO: This will still cause the recognizer to wait
             // until the remaining ASR results come back. At this
             // point, we've sent more audio to the backend than we
@@ -462,8 +473,7 @@ impl Channel {
             self.results.push(response);
 
             if self.config.stream_results {
-                let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
-                match self.send_recognition_complete(cause) {
+                match self.send_recognition_complete() {
                     Ok(()) => self.results.clear(),
                     Err(()) => error!("Failed to send results"),
                 }
@@ -552,8 +562,7 @@ impl Channel {
             return;
         }
 
-        let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
-        match self.send_recognition_complete(cause) {
+        match self.send_recognition_complete() {
             Ok(()) => (),
             Err(()) => error!("failed to send recognition results"),
         }
@@ -570,11 +579,13 @@ impl Channel {
         self.completion_cause = Some(cause);
     }
 
-    pub fn send_recognition_complete(
-        &mut self,
-        cause: ffi::mrcp_recog_completion_cause_e::Type,
-    ) -> Result<(), ()> {
+    pub fn send_recognition_complete(&mut self) -> Result<(), ()> {
         debug!("send recognition complete");
+
+        let cause = self
+            .completion_cause
+            .take()
+            .unwrap_or(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS);
 
         let message = unsafe {
             ffi::mrcp_event_create(
@@ -590,14 +601,16 @@ impl Channel {
 
         let header =
             unsafe { mrcp_resource_header_prepare(message) as *mut ffi::mrcp_recog_header_t };
-        if !header.is_null() {
-            unsafe {
-                (*header).completion_cause = cause;
-                ffi::mrcp_resource_header_property_add(
-                    message,
-                    ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
-                );
-            }
+        if header.is_null() {
+            return Err(());
+        }
+
+        unsafe {
+            (*header).completion_cause = cause;
+            ffi::mrcp_resource_header_property_add(
+                message,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
+            );
         }
 
         unsafe {
