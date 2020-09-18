@@ -7,6 +7,9 @@ resource in an MRCP server.
 
 ## Installation
 
+Download the `libdgmrcp.so` library from the
+[releases](https://github.com/deepgram/dgmrcp/releases) page.
+
 Place the library file `libdgmrcp.so` in the UniMRCP plugins directory
 (for example, `/opt/unimrcp/plugin/`).
 
