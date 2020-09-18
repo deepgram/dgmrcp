@@ -53,9 +53,22 @@ pub struct Channel {
     parameters: Parameters,
 }
 
-pub enum Vad {
-    UniMrcp(NonNull<ffi::mpf_activity_detector_t>),
-    Dg { speaking: bool },
+// TODO: Deallocate the activity detector.
+pub struct Vad {
+    /// Set to true when the backend starts to return ASR results that
+    /// contain words. Whereas the activity detector can be triggered
+    /// by background noise, this can be taken as an indicator that
+    /// speech has started with a very low chance of false positives.
+    ///
+    /// Once this has become true, we can ignore the activity detector
+    /// from that point on.
+    pub speaking: bool,
+
+    /// The activity detector can trigger on background noise, but it
+    /// is much more responsive than waiting for ASR results since it
+    /// doesn't incur the cost of network latency and backend
+    /// processing time.
+    pub activity_detector: Option<NonNull<ffi::mpf_activity_detector_t>>,
 }
 
 #[derive(Default)]
@@ -80,13 +93,13 @@ impl Channel {
     ) -> Self {
         info!("Constructing a Deepgram ASR Engine Channel.");
 
-        let detector = if config.dg_vad {
-            Vad::Dg { speaking: false }
-        } else {
-            unsafe {
-                let detector = ffi::mpf_activity_detector_create(pool);
-                ffi::mpf_activity_detector_level_set(detector, 8);
-                Vad::UniMrcp(NonNull::new_unchecked(detector))
+        let detector = unsafe {
+            let detector = ffi::mpf_activity_detector_create(pool);
+            // TODO: Initialize this from config or headers.
+            ffi::mpf_activity_detector_level_set(detector, 8);
+            Vad {
+                speaking: false,
+                activity_detector: NonNull::new(detector),
             }
         };
 
@@ -118,33 +131,29 @@ impl Channel {
         // TODO: Consider using ptr::NonNull here.
         let response =
             unsafe { ffi::mrcp_response_create(request.as_ptr(), request.as_ref().pool) };
-        let processed = match method_id {
+        match method_id {
             ffi::mrcp_recognizer_method_id::RECOGNIZER_RECOGNIZE => {
                 self.recognize(request.as_ptr(), response);
-                false
             }
             ffi::mrcp_recognizer_method_id::RECOGNIZER_START_INPUT_TIMERS => {
                 self.timers_started = ffi::TRUE;
-                unsafe { mrcp_engine_channel_message_send(self.channel.as_ptr(), response) != 0 }
             }
             ffi::mrcp_recognizer_method_id::RECOGNIZER_STOP => {
                 info!("Received STOP message");
+                // TODO: Review the control flow associated with
+                // this. Does it cause a memory leak?
                 self.stop_response = Some(response);
-                false
             }
             // TODO: These are probably useful to implement.
             ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => {
                 self.set_params(request.as_ptr());
-                false
             }
-            ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => false,
-            _ => false,
-        };
+            ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => (),
+            _ => (),
+        }
 
-        if !processed {
-            unsafe {
-                mrcp_engine_channel_message_send(self.channel.as_ptr(), response);
-            }
+        unsafe {
+            mrcp_engine_channel_message_send(self.channel.as_ptr(), response);
         }
     }
 
@@ -186,7 +195,7 @@ impl Channel {
                 ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT,
             )
         } {
-            if let Vad::UniMrcp(detector) = self.detector {
+            if let Some(detector) = self.detector.activity_detector {
                 unsafe {
                     ffi::mpf_activity_detector_noinput_timeout_set(
                         detector.as_ptr(),
@@ -202,12 +211,28 @@ impl Channel {
                 ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT,
             )
         } {
-            if let Vad::UniMrcp(detector) = self.detector {
+            if let Some(detector) = self.detector.activity_detector {
                 unsafe {
                     ffi::mpf_activity_detector_silence_timeout_set(
                         detector.as_ptr(),
                         (*headers).speech_complete_timeout,
                     );
+                }
+            }
+        }
+
+        if unsafe {
+            mrcp_resource_header_property_check(
+                request,
+                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SENSITIVITY_LEVEL,
+            )
+        } {
+            if let Some(detector) = self.detector.activity_detector {
+                unsafe {
+                    // Invert and scale to [0, 255]; that is, 0.0 -> 255 and 1.0 -> 0
+                    let sensitivity = (*headers).sensitivity_level.max(0.0).min(1.0);
+                    let level = 255 - (sensitivity * 255.0) as usize;
+                    ffi::mpf_activity_detector_level_set(detector.as_ptr(), level);
                 }
             }
         }
@@ -250,7 +275,7 @@ impl Channel {
             // TODO: The default value is 60 ms, but it's easier to
             // test things with a large buffer. This should be
             // configurable anyway.
-            .append_pair("vad_turnoff", "1000")
+            .append_pair("vad_turnoff", "300")
             .append_pair("interim_results", "true")
             .append_pair("encoding", "linear16")
             .append_pair("sample_rate", unsafe {
@@ -404,30 +429,35 @@ impl Channel {
             );
         }
 
-        match self.detector {
-            Vad::Dg { ref mut speaking } => {
-                if !*speaking
-                    && response
-                        .channel
-                        .alternatives
-                        .get(0)
-                        .map(|alt| !alt.transcript.is_empty())
-                        .unwrap_or(false)
-                {
-                    info!("speaking {} => true", speaking);
-                    *speaking = true;
-                    self.start_of_input();
-                } else if *speaking && response.speech_final {
-                    info!("speaking {} => false", speaking);
-                    *speaking = false;
-                    self.end_of_input(
-                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                    );
-                }
-            }
-            _ => (),
+        let contains_speech = response
+            .channel
+            .alternatives
+            .get(0)
+            .map(|alt| !alt.transcript.is_empty())
+            .unwrap_or(false);
+
+        if !self.detector.speaking && contains_speech {
+            trace!("speaking false => true");
+            self.detector.speaking = true;
+            self.start_of_input();
+        } else if self.detector.speaking && response.speech_final {
+            trace!("speaking true => false");
+            // TODO: This will still cause the recognizer to wait
+            // until the remaining ASR results come back. At this
+            // point, we've sent more audio to the backend than we
+            // care about; we'll still need to wait until the WS
+            // closes though.
+            self.end_of_input(
+                ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+            );
         }
 
+        // Copy the boolean because we're about to pass ownership of
+        // the result.
+        let speech_final = response.speech_final;
+
+        // TODO: Do we miss the last result because we called
+        // end_of_input already?
         if response.is_final {
             self.results.push(response);
 
@@ -439,6 +469,25 @@ impl Channel {
                 }
             }
         }
+
+        // TODO: This will cause a segfault -- not when called _here_,
+        // but when the next ASR results are available, and the
+        // WebSocket task (which is running in a different thread)
+        // tries to invoke a callback on the channel, which will have
+        // been deallocated.
+        //
+        // To fix this, we need to change the method_obj on the
+        // UniMRCP channel to be a reference counted pointer instead
+        // of a raw pointer.
+        /*
+        if speech_final {
+            let cause = ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS;
+            match self.send_recognition_complete(cause) {
+                Ok(()) => self.results.clear(),
+                Err(()) => error!("Failed to send results"),
+            }
+        }
+         */
     }
 
     fn build_response(&self, plaintext_results: bool) -> xml::writer::Result<CString> {

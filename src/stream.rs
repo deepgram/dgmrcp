@@ -91,43 +91,56 @@ impl Stream {
             return true;
         }
 
-        match recog_channel.detector {
-            crate::channel::Vad::UniMrcp(detector) => {
-                match unsafe { ffi::mpf_activity_detector_process(detector.as_ptr(), frame.get()) }
-                {
-                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
-                        debug!("Detected voice activity.");
-                        recog_channel.start_of_input();
-                    }
-                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
-                        debug!("Detected voice inactivity.");
-                        if let Err(_) = recog_channel.flush() {
-                            return false;
-                        }
-                        recog_channel.end_of_input(
-                            ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                        );
-                    }
-                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
-                        debug!("Detected no input.");
-                        if let Err(_) = recog_channel.flush() {
-                            return false;
-                        }
-                        if recog_channel.timers_started == ffi::TRUE {
-                            recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
-                        }
-                        recog_channel.end_of_input(
-                            ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
-                        );
-                    }
-                    ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
-                    event => warn!("unhandled event type: {}", event),
+        // We only need to check the activity detector if we have not
+        // yet received results from the backend; if results have been
+        // received, then we rely on the backend's endpointing.
+        if let Some(detector) = recog_channel
+            .detector
+            .activity_detector
+            .filter(|_| !recog_channel.detector.speaking)
+        {
+            let event =
+                unsafe { ffi::mpf_activity_detector_process(detector.as_ptr(), frame.get()) };
+            match event {
+                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
+                    debug!("Detected voice activity.");
+                    // TODO: If the activity detector gets triggered,
+                    // then this will cause us to never update it
+                    // again, because we assume that we'll be
+                    // receiving ASR results. If we _don't_ receive
+                    // ASR results, then this we'll end up waiting
+                    // forever.
+                    recog_channel.detector.speaking = true;
+                    recog_channel.start_of_input();
                 }
-            }
+                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
+                    debug!("Detected voice inactivity.");
+                    if let Err(_) = recog_channel.flush() {
+                        return false;
+                    }
+                    recog_channel.end_of_input(
+                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                    );
+                }
+                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
+                    debug!("Detected no input.");
+                    if let Err(_) = recog_channel.flush() {
+                        return false;
+                    }
+                    if recog_channel.timers_started == ffi::TRUE {
+                        recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
+                    }
 
-            // Do nothing; events are handled when results are
-            // received.
-            crate::channel::Vad::Dg { .. } => (),
+                    // TODO: I don't think this is correct. This won't
+                    // properly support barge-in, because it'll time
+                    // out too early.
+                    recog_channel.end_of_input(
+                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                    );
+                }
+                ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NONE => (),
+                _ => warn!("unhandled event type: {}", event),
+            }
         }
 
         if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)

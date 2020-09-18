@@ -132,10 +132,6 @@ pub struct Config {
     pub plaintext_results: bool,
     pub model: Option<String>,
     pub language: Option<String>,
-
-    /// Use Deepgram's VAD for detecting start and end of speech.
-    #[serde(default)]
-    pub dg_vad: bool,
 }
 
 impl Config {
