@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::{
     ffi::{CStr, CString},
     ptr::NonNull,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc;
 use xml::writer::XmlEvent;
@@ -52,6 +52,11 @@ pub struct Channel {
     config: Arc<Config>,
     parameters: Parameters,
 }
+
+/// This is safe, because we promise to always access `Channel` via an
+/// `Arc<Mutex<Channel>>`. On its own, `Channel` should not be safe
+/// because it contains raw pointers.
+unsafe impl Send for Channel {}
 
 // TODO: Deallocate the activity detector.
 pub struct Vad {
@@ -95,7 +100,7 @@ impl Channel {
         pool: *mut ffi::apr_pool_t,
         config: Arc<Config>,
         runtime_handle: tokio::runtime::Handle,
-    ) -> Self {
+    ) -> Arc<Mutex<Self>> {
         info!("Constructing a Deepgram ASR Engine Channel.");
 
         let detector = unsafe {
@@ -106,7 +111,7 @@ impl Channel {
             }
         };
 
-        Channel {
+        let channel = Channel {
             recog_request: None,
             stop_response: None,
             detector,
@@ -121,7 +126,9 @@ impl Channel {
             runtime_handle,
             config,
             parameters: Default::default(),
-        }
+        };
+
+        Arc::new(Mutex::new(channel))
     }
 
     /// Process an MRCP request. This is called from
@@ -360,7 +367,22 @@ impl Channel {
             info!("Done writing to websocket");
         };
 
-        let channel = SendPtr::new(self.channel.as_ptr());
+        // This is a really weird self-referential expression. The
+        // `ffi::mrcp_engine_channel_t` owns the `Channel` struct via
+        // an `Arc<Mutex<Channel>>`, which is (in the scope of this
+        // function) currently bound to `&mut self`. Since we're going
+        // to spawn a task which may continue past the lifetime of the
+        // channel, we need to ensure it doesn't invoke callbacks on
+        // the channel after it has been destroyed.
+        //
+        // By casting `Channel::channel` to an `Arc`, we _do_ have
+        // multiple mutable references to the `Arc` itself (one here
+        // and one further up the call stack), but since we aren't
+        // going to modify the `Arc`, this _should_ be safe.
+        let channel = unsafe {
+            let arc = &mut *(self.channel.as_ref().method_obj as *mut Arc<Mutex<Channel>>);
+            Arc::downgrade(arc)
+        };
         let read = async move {
             while let Some(msg) = ws_rx.next().await {
                 trace!("received ws msg: {:?}", msg);
@@ -396,8 +418,15 @@ impl Channel {
                             }
                         };
 
-                        let channel =
-                            unsafe { &mut *((*channel.get()).method_obj as *mut Channel) };
+                        let channel = match channel.upgrade() {
+                            None => {
+                                error!("Channel has been deallocated");
+                                return;
+                            }
+                            Some(ptr) => ptr,
+                        };
+                        let mut channel = channel.lock().unwrap();
+
                         match msg {
                             Message::Results(msg) => channel.results_available(msg),
                             Message::Summary(msg) => channel.results_summary(msg),
@@ -754,8 +783,14 @@ unsafe extern "C" fn channel_open(channel: *mut ffi::mrcp_engine_channel_t) -> f
 unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Closing Deepgram ASR channel.");
 
+    // This is where we deallocate the `Channel` struct, by first
+    // casting back to an pointer to an `Arc` and then taking
+    // ownership in a box.
     let mut channel = NonNull::new(channel).expect("channel ptr should never be null");
-    let channel_data = &mut *(channel.as_mut().method_obj as *mut Channel);
+    let channel_data = channel.as_mut().method_obj as *mut Arc<Mutex<Channel>>;
+    let channel_data = Box::from_raw(channel_data);
+    let mut channel_data = channel_data.lock().unwrap();
+
     channel_data.sink.take();
 
     let channel = SendPtr::new(channel.as_ptr());
@@ -774,19 +809,24 @@ unsafe extern "C" fn channel_process_request(
     channel: *mut ffi::mrcp_engine_channel_t,
     request: *mut ffi::mrcp_message_t,
 ) -> ffi::apt_bool_t {
-    let channel_data_ptr = SendPtr::new((*channel).method_obj as *mut Channel);
+    let channel_data = &mut *((*channel).method_obj as *mut Arc<Mutex<Channel>>);
+    let channel_data_weak = Arc::downgrade(channel_data);
     let request = SendPtr::new(request);
 
-    (*channel_data_ptr.get())
+    channel_data
+        .lock()
+        .unwrap()
         .runtime_handle
         .spawn_blocking(move || {
-            // TODO: This is not safe, because the channel may have been
-            // deallocated before this cloure gets run.
-            let channel_data = &mut *(channel_data_ptr.get());
+            let channel_data = match channel_data_weak.upgrade() {
+                None => return,
+                Some(ptr) => ptr,
+            };
+
             let request =
                 NonNull::new(request.get()).expect("request pointer should never be null");
 
-            channel_data.process_request(request);
+            channel_data.lock().unwrap().process_request(request);
         });
 
     ffi::TRUE

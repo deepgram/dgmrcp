@@ -1,4 +1,5 @@
 use crate::{channel::Channel, codec::Codec, ffi, frame::Frame, helper::*};
+use std::sync::{Arc, Mutex};
 
 /// Define the engine v-table
 pub static STREAM_VTABLE: ffi::mpf_audio_stream_vtable_t = ffi::mpf_audio_stream_vtable_t {
@@ -75,7 +76,8 @@ impl Stream {
     fn write(&mut self, frame: &mut Frame) -> bool {
         trace!("write :: frame.type={}", frame.get().type_);
 
-        let recog_channel = unsafe { &mut *((*self.0).obj as *mut Channel) };
+        let recog_channel = unsafe { &mut *((*self.0).obj as *mut Arc<Mutex<Channel>>) };
+        let mut recog_channel = recog_channel.lock().unwrap();
 
         // TODO: What is this for?
         if let Some(stop_response) = recog_channel.stop_response.take() {

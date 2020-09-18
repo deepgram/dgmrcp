@@ -87,8 +87,11 @@ unsafe extern "C" fn engine_create_channel(
 ) -> *mut ffi::mrcp_engine_channel_t {
     let data = &*((*engine).obj as *mut Engine);
 
+    // Construct a new channel, box it, and leak the pointer. The box
+    // will be reconstructed when the channel closes, and the
+    // `Channel` will be deallocated correctly.
     let channel_data = Channel::new(pool, data.config.clone(), data.runtime_handle.clone());
-    let channel_data = crate::pool::Pool::from(pool).palloc(channel_data);
+    let channel_data = Box::into_raw(Box::new(channel_data));
 
     let caps = mpf_sink_stream_capabilities_create(pool);
     let codec: &CStr = CStr::from_bytes_with_nul_unchecked(b"LPCM\0");
@@ -114,7 +117,7 @@ unsafe extern "C" fn engine_create_channel(
         pool,
     );
 
-    (*channel_data).channel = NonNull::new(channel).unwrap();
+    (*channel_data).lock().unwrap().channel = NonNull::new(channel).unwrap();
 
     channel
 }
