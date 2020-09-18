@@ -1,7 +1,10 @@
 [package]
 name = "dgmrcp"
 version = "0.1.0"
-authors = ["Adam Sypniewski <ajsyp@syptech.net>"]
+authors = [
+  "Adam Sypniewski <ajsyp@syptech.net>",
+  "Anthony Deschamps <anthony.j.deschamps@gmail.com>",
+]
 edition = "2018"
 
 [lib]
