@@ -355,7 +355,12 @@ impl Channel {
                         ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
                     );
 
-                    let reason = CStr::from_bytes_with_nul_unchecked(b"Failed to open websocket connection; check that credentials are properly configured and the requested model is valid.\0");
+                    let reason = match err {
+                        tungstenite::Error::Http(http::StatusCode::UNAUTHORIZED) => CStr::from_bytes_with_nul_unchecked(b"Check that credentials are properly configured.\0"),
+                        tungstenite::Error::Http(http::StatusCode::FORBIDDEN) => CStr::from_bytes_with_nul_unchecked(b"Check that the requested model is valid.\0"),
+                        _ => CStr::from_bytes_with_nul_unchecked(b"Check that credentials are properly configured and the requested model is valid.\0")
+                    };
+
                     apt_string_assign(
                         &mut (*header).completion_reason,
                         reason.as_ptr(),
