@@ -343,6 +343,32 @@ impl Channel {
                 // TODO: this is not the right response code.
                 response.start_line.status_code =
                     ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+
+                let header = unsafe {
+                    mrcp_resource_header_prepare(response) as *mut ffi::mrcp_recog_header_t
+                };
+                unsafe {
+                    (*header).completion_cause =
+                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_ERROR;
+                    ffi::mrcp_resource_header_property_add(
+                        response,
+                        ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
+                    );
+
+                    let reason = CStr::from_bytes_with_nul_unchecked(b"Failed to open websocket connection; check that credentials are properly configured and the requested model is valid.\0");
+                    apt_string_assign(
+                        &mut (*header).completion_reason,
+                        reason.as_ptr(),
+                        (*response).pool,
+                    );
+
+                    ffi::mrcp_resource_header_property_add(
+                        response,
+                        ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_REASON
+                            as usize,
+                    );
+                }
+
                 return;
             }
         };
