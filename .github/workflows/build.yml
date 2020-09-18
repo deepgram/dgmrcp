@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: '*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build
+        uses: docker/build-push-action@v2
+        with:
+          load: true
+          tags: dgmrcp
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Extract library
+        run: |
+          CONTAINER=$(docker create dgmrcp) && docker cp $CONTAINER:/dgmrcp/target/release/libdgmrcp.so ./ && docker rm $CONTAINER
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Build ${{ github.ref }}
+          body: |
+            Automatically generated release
+          draft: false
+          prerelease: true
+
+      - name: Upload release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./libdgmrcp.so
+          asset_name: libdgmrcp.so
+          asset_content_type: application/octet-stream
