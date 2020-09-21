@@ -59,7 +59,6 @@ pub struct Channel {
 /// because it contains raw pointers.
 unsafe impl Send for Channel {}
 
-// TODO: Deallocate the activity detector.
 pub struct Vad {
     /// Set to true when the backend starts to return ASR results that
     /// contain words. Whereas the activity detector can be triggered
