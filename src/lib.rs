@@ -23,6 +23,19 @@
 //! Data is returned as XML (application/x-nlsml). See [RFC
 //! 6787](https://tools.ietf.org/html/rfc6787#section-9.6.3.3) for more
 //! details.
+//!
+//! # A note on memory allocation
+//!
+//! UniMRCP uses memory pools from the Apache Portable Runtime ([API
+//! docs][apr_api_docs]). Other than the API docs, the best
+//! explanation I could find is [here][apr_explanation]. The main
+//! thing to be aware of is that memory is allocated in pools and then
+//! bulk deallocated. UniMRCP creates a new memory pool for each
+//! channel, so any memory allocated from the pool will be reclaimed
+//! when the channel closes; no manual deallacation is necessary.
+//!
+//! [apr_api_docs]: https://apr.apache.org/docs/apr/1.5/group__apr__pools.html
+//! [apr_explanation]: http://www.apachetutor.org/dev/pools
 
 #[macro_use]
 extern crate log;

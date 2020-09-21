@@ -155,14 +155,12 @@ impl Channel {
             }
             ffi::mrcp_recognizer_method_id::RECOGNIZER_STOP => {
                 info!("Received STOP message");
-                // TODO: Review the control flow associated with
-                // this. Does it cause a memory leak?
                 self.stop_response = Some(response);
             }
-            // TODO: These are probably useful to implement.
             ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => {
                 self.set_params(request.as_ptr());
             }
+            // TODO: Implement this.
             ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => (),
             _ => (),
         }
@@ -696,8 +694,6 @@ impl Channel {
                 Ok(body) => body,
                 Err(err) => {
                     warn!("Failed to build response body: {}", err);
-                    // TODO: This leaks memory from the allocation of
-                    // the message above.
                     return Err(());
                 }
             };
