@@ -558,16 +558,6 @@ impl Channel {
             }
         }
 
-        // TODO: This will cause a segfault -- not when called _here_,
-        // but when the next ASR results are available, and the
-        // WebSocket task (which is running in a different thread)
-        // tries to invoke a callback on the channel, which will have
-        // been deallocated.
-        //
-        // To fix this, we need to change the method_obj on the
-        // UniMRCP channel to be a reference counted pointer instead
-        // of a raw pointer.
-
         if speech_final {
             match self.send_recognition_complete() {
                 Ok(()) => self.results.clear(),
