@@ -10,21 +10,20 @@ use std::{
     fmt,
 };
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("internal")]
     Internal,
+
+    #[error("not supported")]
     NotSupported,
+
+    #[error("not found")]
     NotFound,
+
+    #[error("serde: {0}")]
     Serde(String),
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        <Self as fmt::Debug>::fmt(self, f)
-    }
-}
-
-impl std::error::Error for Error {}
 
 impl serde::de::Error for Error {
     fn custom<T: fmt::Display>(t: T) -> Self {
