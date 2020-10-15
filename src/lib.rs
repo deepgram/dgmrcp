@@ -52,6 +52,7 @@ pub mod pool;
 pub mod stem;
 pub mod stream;
 pub mod utils;
+pub mod vendor_params;
 
 /// Import the MRCP Engine bindings.
 pub mod ffi {
