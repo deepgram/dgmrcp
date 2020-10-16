@@ -51,7 +51,6 @@ pub struct Channel {
     completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
     runtime_handle: tokio::runtime::Handle,
     config: Arc<Config>,
-    parameters: Parameters,
 }
 
 /// This is safe, because we promise to always access `Channel` via an
@@ -74,12 +73,6 @@ pub struct Vad {
     /// doesn't incur the cost of network latency and backend
     /// processing time.
     pub activity_detector: Option<NonNull<ffi::mpf_activity_detector_t>>,
-}
-
-#[derive(Default)]
-struct Parameters {
-    language: Option<String>,
-    sensitivity_level: Option<f32>,
 }
 
 impl Channel {
@@ -125,7 +118,6 @@ impl Channel {
             completion_cause: None,
             runtime_handle,
             config,
-            parameters: Default::default(),
         };
 
         Arc::new(Mutex::new(channel))
@@ -135,6 +127,22 @@ impl Channel {
     /// `channel_process_request` and is run on the tokio threadpool,
     /// using `spawn_blocking`. Therefore, it is okay to block in this
     /// function.
+    ///
+    /// # Not handling SET-PARAMS and GET-PARAMS
+    ///
+    /// We explicitly don't handle the SET-PARAMS message, because it
+    /// is already handled by UniMRCP. If a SET-PARAMS message has
+    /// previously been received on this channel, then UniMRCP will
+    /// save its header and merge them in to a subsequent RECOGNIZE
+    /// message. This allows the plugin to assume that all parameters
+    /// will be present in a RECOGNIZE message without dealing with
+    /// the statefulness of SET-PARAMS. See
+    /// `recog_request_recognize()` and `mrcp_header_fields_inherit()`
+    /// in the UniMRCP source for the implementation of this
+    /// behaviour.
+    ///
+    /// It appears that UniMRCP does not implement the wildcard
+    /// variant of GET-PARAMS.
     fn process_request(&mut self, request: NonNull<ffi::mrcp_message_t>) {
         let method_id = unsafe { request.as_ref().start_line.method_id as u32 };
 
@@ -157,11 +165,6 @@ impl Channel {
                 info!("Received STOP message");
                 self.stop_response = Some(response);
             }
-            ffi::mrcp_recognizer_method_id::RECOGNIZER_SET_PARAMS => {
-                self.set_params(request.as_ptr());
-            }
-            // TODO: Implement this.
-            ffi::mrcp_recognizer_method_id::RECOGNIZER_GET_PARAMS => (),
             _ => (),
         }
 
@@ -252,7 +255,6 @@ impl Channel {
         };
 
         let sensitivity = header_sensitivity
-            .or(self.parameters.sensitivity_level)
             .or(self.config.sensitivity_level)
             .unwrap_or(Channel::DEFAULT_SENSITIVITY_LEVEL);
 
@@ -315,10 +317,7 @@ impl Channel {
         if let Some(model) = self.config.model.clone() {
             url.query_pairs_mut().append_pair("model", &model);
         }
-        if let Some(language) = recognize_language
-            .or(self.parameters.language.as_deref())
-            .or(self.config.language.as_deref())
-        {
+        if let Some(language) = recognize_language.or(self.config.language.as_deref()) {
             url.query_pairs_mut().append_pair("language", language);
         }
 
@@ -761,35 +760,6 @@ impl Channel {
                 error!("failed to send buffer: {}", err);
                 return Err(());
             }
-        }
-
-        Ok(())
-    }
-
-    fn set_params(&mut self, request: *mut ffi::mrcp_message_t) -> Result<(), ()> {
-        let headers = NonNull::new(
-            unsafe { mrcp_resource_header_get(request) } as *mut ffi::mrcp_recog_header_t
-        )
-        .ok_or(())?;
-
-        if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
-            )
-        } {
-            let language = unsafe { headers.as_ref() }.speech_language.as_str();
-            self.parameters.language = Some(language.to_string());
-        }
-
-        if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SENSITIVITY_LEVEL,
-            )
-        } {
-            let level = unsafe { headers.as_ref() }.sensitivity_level;
-            self.parameters.sensitivity_level = Some(level);
         }
 
         Ok(())
