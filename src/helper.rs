@@ -115,6 +115,19 @@ pub unsafe fn mrcp_header_allocate(
     }
 }
 
+pub unsafe fn mrcp_generic_header_get(
+    message: *const ffi::mrcp_message_t,
+) -> *mut ffi::mrcp_generic_header_t {
+    (*message).header.generic_header_accessor.data as *mut ffi::mrcp_generic_header_t
+}
+
+pub unsafe fn mrcp_generic_header_property_check(
+    message: *const ffi::mrcp_message_t,
+    id: ffi::mrcp_generic_header_id::Type,
+) -> bool {
+    apt_header_section_field_check(&(*message).header.header_section as *const _, id)
+}
+
 pub unsafe fn mrcp_generic_header_prepare(
     message: *mut ffi::mrcp_message_t,
 ) -> *mut ffi::mrcp_generic_header_t {
@@ -135,20 +148,20 @@ pub unsafe fn mrcp_resource_header_property_check(
     apt_header_section_field_check(
         &(*message).header.header_section as *const _,
         id + ffi::mrcp_generic_header_id::GENERIC_HEADER_COUNT,
-    ) == ffi::TRUE
+    )
 }
 
 pub unsafe fn apt_header_section_field_check(
     header: *const ffi::apt_header_section_t,
     id: ffi::mrcp_recognizer_header_id::Type,
-) -> ffi::apt_bool_t {
+) -> bool {
     if (id as usize) < (*header).arr_size {
         if (*(*header).arr.add(id as usize)).is_null() {
-            ffi::FALSE
+            false
         } else {
-            ffi::TRUE
+            true
         }
     } else {
-        ffi::FALSE
+        false
     }
 }

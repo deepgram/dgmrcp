@@ -46,6 +46,13 @@ The following options can be specified:
 | sensitivity_level | float | The default VAD sensitivity level, between 0.0 and 1.0. |
 | plaintext_results | boolean | If `true`, then results in a `RECOGNITION-COMPLETE` message will be in plain text instead of the standard [NLSML](https://tools.ietf.org/html/rfc6787#section-6.3.1). Note that this does not conform to the MRCP specification, but it can be convenient for testing and development. |
 
+The following [vendor-specific
+parameters](https://tools.ietf.org/html/rfc6787#section-6.2.16) are
+supported:
+
+| name | value | description |
+| ---  | ---   | ---
+| com.deepgram.model | string | Specify the ASR model to use for this request. |
 
 ## Building
 

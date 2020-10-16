@@ -194,6 +194,34 @@ impl Channel {
             }
         }
 
+        #[derive(Debug, Default, Deserialize)]
+        struct VendorHeaders {
+            #[serde(rename = "com.deepgram.model")]
+            model: Option<String>,
+        }
+
+        let vendor_headers: VendorHeaders = if unsafe {
+            mrcp_generic_header_property_check(
+                request,
+                ffi::mrcp_generic_header_id::GENERIC_HEADER_VENDOR_SPECIFIC_PARAMS,
+            )
+        } {
+            let generic_headers = unsafe { mrcp_generic_header_get(request) };
+            match crate::vendor_params::from_header_array(unsafe {
+                (*generic_headers).vendor_specific_params
+            }) {
+                Ok(headers) => headers,
+                Err(err) => {
+                    error!("Failed to deserialize headers: {}", err);
+                    response.start_line.status_code =
+                        ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+                    return;
+                }
+            }
+        } else {
+            Default::default()
+        };
+
         let headers = unsafe { mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t };
         if headers.is_null() {
             warn!("Failed to get headers");
@@ -314,7 +342,7 @@ impl Channel {
             .append_pair("channels", unsafe {
                 &(*codec_descriptor).channel_count.to_string()
             });
-        if let Some(model) = self.config.model.clone() {
+        if let Some(model) = vendor_headers.model.or_else(|| self.config.model.clone()) {
             url.query_pairs_mut().append_pair("model", &model);
         }
         if let Some(language) = recognize_language.or(self.config.language.as_deref()) {
