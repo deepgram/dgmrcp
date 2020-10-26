@@ -322,10 +322,10 @@ impl Channel {
 
         // Build the request
 
-        let auth = format!(
-            "{}:{}",
-            self.config.brain_username, self.config.brain_password
-        );
+        let auth = match (&self.config.brain_username, &self.config.brain_password) {
+            (Some(username), Some(password)) => Some(format!("{}:{}", username, password)),
+            _ => None,
+        };
         let mut url = self.config.brain_url.join("listen/stream").unwrap();
         // TODO: Perhaps these should not be hardcoded?
         url.query_pairs_mut()
@@ -351,11 +351,11 @@ impl Channel {
 
         info!("Building request to {}", url);
 
-        let req = http::Request::builder()
-            .uri(url.as_str())
-            .header("Authorization", format!("Basic {}", base64::encode(auth)))
-            .body(())
-            .unwrap();
+        let mut req = http::Request::builder().uri(url.as_str());
+        if let Some(auth) = auth {
+            req = req.header("Authorization", format!("Basic {}", base64::encode(auth)))
+        }
+        let req = req.body(()).unwrap();
 
         info!("Opening websocket connection");
         let (socket, http_response) = match self

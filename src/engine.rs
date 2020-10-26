@@ -125,8 +125,8 @@ unsafe extern "C" fn engine_create_channel(
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub brain_url: url::Url,
-    pub brain_username: String,
-    pub brain_password: String,
+    pub brain_username: Option<String>,
+    pub brain_password: Option<String>,
     #[serde(default = "Config::default_chunk_size")]
     pub chunk_size: u64,
     #[serde(default)]
@@ -158,6 +158,7 @@ pub struct Engine {
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
+/*
 /// Log in to the Brain service, returning an HTTP client
 /// preconfigured with JWT auth credentials.
 async fn login(config: Arc<Config>) -> Result<reqwest::Client, Error> {
@@ -202,3 +203,4 @@ async fn login(config: Arc<Config>) -> Result<reqwest::Client, Error> {
 
     Ok(client)
 }
+*/

@@ -39,8 +39,8 @@ The following options can be specified:
 | name | value | description |
 | ---  | ---   | ---
 | brain_url | string (required) | The URL of the Deepgram ASR API. You can set this to `wss://brain.deepgram.com/v2/` to use Deepgram's hosted API, or set it to the URL of your on-prem deployment. Note the trailing slash, which is significant. |
-| brain_username | string (required) | API username or [API key](https://docs.deepgram.com/#api-keys). |
-| brain_password | string (required) | API password or secret. |
+| brain_username | string | API username or [API key](https://docs.deepgram.com/#api-keys). |
+| brain_password | string | API password or secret. |
 | model | string | The default ASR model to use. |
 | language | string | The default ASR language to use. |
 | sensitivity_level | float | The default VAD sensitivity level, between 0.0 and 1.0. |
