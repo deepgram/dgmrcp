@@ -26,8 +26,8 @@ A minimum configuration is as follows:
 <plugin-factory>
   <engine id="Deepgram" name="libdgmrcp" enable="true">
     <param name="brain_url" value="wss://brain.deepgram.com/v2/"/>
-    <param name="brain_username" value="USERNAME"/>
-    <param name="brain_password" value="PASSWORD"/>
+    <param name="brain_username" value="{{ USERNAME }}"/>
+    <param name="brain_password" value="{{ PASSWORD }}"/>
   </engine>
 </plugin-factory>
 ```
