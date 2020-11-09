@@ -1,55 +1,55 @@
-FROM rust:1.45.2
+From centos:7
 
-RUN apt-get update && apt-get install -y \
-        automake \
-        clang \
-        curl \
-        gcc \
-        git \
-        libsofia-sip-ua-dev \
-        libsofia-sip-ua-glib-dev \
-        libsofia-sip-ua-glib3 \
-        libsofia-sip-ua0 \
-        libssl-dev \
-        libtool \
-        pkg-config \
-        sofia-sip-bin \
-        sudo \
-        wget
+# These are used to access the UniMRCP package repository.
+ARG UNIMRCP_USERNAME
+ARG UNIMRCP_PASSWORD
 
-# Download and install UniMRPC dependencies
-WORKDIR /
-RUN wget http://www.unimrcp.org/project/component-view/unimrcp-deps-1-6-0-tar-gz/download -O unimrcp-deps-1.6.0.tar.gz
-RUN tar xzf unimrcp-deps-1.6.0.tar.gz
-WORKDIR /unimrcp-deps-1.6.0
-RUN ./build-dep-libs.sh --silent
-RUN ls
+RUN echo -e "\
+[unimrcp]\n\
+name=UniMRCP Packages for Red Hat / Cent OS-$releasever $basearch\n\
+baseurl=https://$UNIMRCP_USERNAME:$UNIMRCP_PASSWORD@unimrcp.org/repo/yum/main/rhel\$releasever/\$basearch\n\
+enabled=1\n\
+sslverify=1\n\
+gpgcheck=1\n\
+gpgkey=https://unimrcp.org/keys/unimrcp-gpg-key.public" > /etc/yum.repos.d/unimrcp.repo
 
-# Download and install UniMRCP
-WORKDIR /
-RUN git clone https://github.com/unispeech/unimrcp
-WORKDIR /unimrcp
-RUN git checkout unimrcp-1.6.0
-RUN ./bootstrap
-RUN ./configure
-RUN make -j
-RUN make install
+RUN yum install -y unimrcp-server-devel
+
 
 # # Install Rust
-# WORKDIR /
-# RUN curl -sSf https://sh.rustup.rs | sh -s -- -y
-# # This initializes the crates.io registry
-# RUN . $HOME/.cargo/env && cargo search
+# COPY rust-toolchain /rust-toolchain
+# RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $(cat /rust-toolchain) --target x86_64-unknown-linux-musl
+
+# Install Rust
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable
+
+RUN yum install -y pkg-config clang gcc llvm-devel # libssl-dev openssl-devel
+
+
+# Install OpenSSL
+ARG OPENSSL_VERSION=1.1.1g
+
+RUN yum install -y perl
+RUN curl -sSfL https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz | tar -xz && \
+    cd openssl-* && \
+    # Configure and build.
+    ./config \
+        no-shared \
+        no-zlib \
+        -fPIC \
+        -DOPENSSL_NO_SECURE_MEMORY \
+        --prefix=/usr/local && \
+    make install && \
+    rm -rf $(pwd)
 
 # Build the Deepgram MRCP plugin
 WORKDIR /dgmrcp
-RUN USER=root cargo init --lib --name dummy-project
 COPY Cargo.toml Cargo.lock ./
-RUN cargo build --release
-RUN rm src/*.rs
-RUN rm ./target/release/deps/dgmrcp*
 COPY native native
 COPY build.rs ./
 COPY src src
-RUN cargo build --release
+ENV MRCP_INCLUDE_PATH=/opt/unimrcp/include:/opt/unimrcp/include/apr-1
+ENV OPENSSL_INCLUDE_DIR=/usr/local/include/openssl
+ENV OPENSSL_LIB_DIR=/usr/local/lib64
+RUN . $HOME/.cargo/env && cargo build --release
 RUN strip ./target/release/libdgmrcp.so

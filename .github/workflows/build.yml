@@ -27,6 +27,9 @@ jobs:
         with:
           load: true
           tags: dgmrcp
+          build-args: |
+            UNIMRCP_USERNAME={{ secrets.UNIMRCP_USERNAME }}
+            UNIMRCP_PASSWORD={{ secrets.UNIMRCP_PASSWORD }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
 
