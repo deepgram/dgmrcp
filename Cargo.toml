@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 bindgen = { version = "0.50.0", default-features = false }
 
 [dependencies]
-base64 = "0.12"
+base64 = "0.13"
 bytes = "0.5"
 futures = "0.3"
 http = "0.2"
