@@ -51,6 +51,7 @@ pub struct Channel {
     completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
     runtime_handle: tokio::runtime::Handle,
     config: Arc<Config>,
+    request_grammars: Vec<String>,
 }
 
 /// This is safe, because we promise to always access `Channel` via an
@@ -118,6 +119,7 @@ impl Channel {
             completion_cause: None,
             runtime_handle,
             config,
+            request_grammars: vec![],
         };
 
         Arc::new(Mutex::new(channel))
@@ -175,6 +177,10 @@ impl Channel {
 
     fn recognize(&mut self, request: *mut ffi::mrcp_message_t, response: *mut ffi::mrcp_message_t) {
         info!("Channel::recognize");
+
+        // Clear the results from a previous RECOGNIZE request.
+        self.results.clear();
+        self.request_grammars.clear();
 
         let response = unsafe { &mut *response };
 
@@ -306,8 +312,51 @@ impl Channel {
             None
         };
 
-        // Clear the results from a previous RECOGNIZE request.
-        self.results.clear();
+        // Determine whether the body contains a grammar.
+
+        if unsafe {
+            mrcp_generic_header_property_check(
+                request,
+                ffi::mrcp_generic_header_id::GENERIC_HEADER_CONTENT_TYPE,
+            )
+        } {
+            let generic_headers = unsafe { mrcp_generic_header_get(request) };
+            match unsafe { (*generic_headers).content_type.as_str() } {
+                "text/uri-list" => {
+                    self.request_grammars = unsafe { (*request).body.as_str() }
+                        .lines()
+                        .map(|s| s.to_string())
+                        .collect();
+                }
+
+                // Other valid `content-type`values include
+                // "text/grammar-ref-list" and "application/srgs+xml",
+                // but we are not currently handling them.
+                content_type => {
+                    error!(
+                        "RECOGNIZE content-type header not supported: {}",
+                        content_type
+                    );
+                    // Unsupported Header Field Value. See
+                    // https://tools.ietf.org/html/rfc6787#section-5.4
+                    response.start_line.status_code = 409;
+                    unsafe {
+                        let header = mrcp_generic_header_prepare(response);
+                        apt_string_assign_n(
+                            &mut (*header).content_type,
+                            content_type.as_ptr() as *const i8,
+                            content_type.len(),
+                            (*response).pool,
+                        );
+                        ffi::mrcp_generic_header_property_add(
+                            response,
+                            ffi::mrcp_generic_header_id::GENERIC_HEADER_CONTENT_TYPE as usize,
+                        );
+                    }
+                    return;
+                }
+            }
+        }
 
         let (tx, mut rx) = mpsc::channel(1024);
         self.sink = Some(tx);
@@ -629,11 +678,14 @@ impl Channel {
             .perform_indent(true)
             .create_writer(&mut buffer);
         writer.write(XmlEvent::start_element("result"))?;
-        writer.write(
-            XmlEvent::start_element("interpretation")
-                .attr("grammar", "session:request1@form-level.store")
-                .attr("confidence", &confidence.to_string()),
-        )?;
+        writer.write({
+            let element = XmlEvent::start_element("interpretation");
+            let element = match self.request_grammars.first() {
+                Some(grammar) => element.attr("grammar", grammar),
+                None => element,
+            };
+            element.attr("confidence", &confidence.to_string())
+        })?;
         writer.write(XmlEvent::start_element("instance"))?;
         writer.write(XmlEvent::characters(transcript.as_str()))?;
         writer.write(XmlEvent::end_element())?;
