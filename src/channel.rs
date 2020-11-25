@@ -49,7 +49,7 @@ pub struct Channel {
     pub buffer: BytesMut,
     chunk_size: usize,
     completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
-    runtime_handle: tokio::runtime::Handle,
+    runtime: Arc<tokio::runtime::Runtime>,
     config: Arc<Config>,
     request_grammars: Vec<String>,
 }
@@ -93,7 +93,7 @@ impl Channel {
     pub fn new(
         pool: *mut ffi::apr_pool_t,
         config: Arc<Config>,
-        runtime_handle: tokio::runtime::Handle,
+        runtime: Arc<tokio::runtime::Runtime>,
     ) -> Arc<Mutex<Self>> {
         info!("Constructing a Deepgram ASR Engine Channel.");
 
@@ -117,7 +117,7 @@ impl Channel {
             buffer: BytesMut::new(),
             chunk_size: config.chunk_size as usize,
             completion_cause: None,
-            runtime_handle,
+            runtime,
             config,
             request_grammars: vec![],
         };
@@ -408,7 +408,7 @@ impl Channel {
 
         info!("Opening websocket connection");
         let (socket, http_response) = match self
-            .runtime_handle
+            .runtime
             .block_on(async_tungstenite::tokio::connect_async(req))
         {
             Ok(pair) => pair,
@@ -457,7 +457,7 @@ impl Channel {
         let write = async move {
             info!("Begin writing to websocket");
 
-            while let Some(msg) = rx.next().await {
+            while let Some(msg) = rx.recv().await {
                 if let Err(err) = ws_tx.send(msg).await {
                     warn!("Websocket connection closed: {}", err);
                 }
@@ -548,7 +548,7 @@ impl Channel {
             }
         };
 
-        self.runtime_handle.spawn(future::join(write, read));
+        self.runtime.spawn(future::join(write, read));
 
         info!("handled RECOGNIZE request");
         response.start_line.request_state =
@@ -836,7 +836,7 @@ impl Channel {
             // should switch to an unbounded channel so that we we can
             // enqueue messages from this thread, ensuring they are
             // placed in the correct order.
-            if let Err(err) = self.runtime_handle.block_on(sink.send(message)) {
+            if let Err(err) = self.runtime.block_on(sink.send(message)) {
                 error!("failed to send buffer: {}", err);
                 return Err(());
             }
@@ -895,16 +895,12 @@ unsafe extern "C" fn channel_close(channel: *mut ffi::mrcp_engine_channel_t) -> 
     // data, we can safely notify the engine that we are ready to
     // close, and then drop the data.
     let channel = SendPtr::new(channel.as_ptr());
-    mutex
-        .lock()
-        .unwrap()
-        .runtime_handle
-        .spawn_blocking(move || {
-            // This is safe because UniMRCP will not deallocate the
-            // channel until after the close response has been sent.
-            let channel = channel.get();
-            mrcp_engine_channel_close_respond(channel);
-        });
+    mutex.lock().unwrap().runtime.spawn_blocking(move || {
+        // This is safe because UniMRCP will not deallocate the
+        // channel until after the close response has been sent.
+        let channel = channel.get();
+        mrcp_engine_channel_close_respond(channel);
+    });
 
     info!("Closed channel");
 
@@ -922,7 +918,7 @@ unsafe extern "C" fn channel_process_request(
     channel_data
         .lock()
         .unwrap()
-        .runtime_handle
+        .runtime
         .spawn_blocking(move || {
             let channel_data = match channel_data_weak.upgrade() {
                 None => return,

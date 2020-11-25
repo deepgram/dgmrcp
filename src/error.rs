@@ -5,8 +5,8 @@ pub enum Error {
     #[error("Initialization")]
     Initialization,
 
-    #[error("Request failed: {0}")]
-    Request(#[from] reqwest::Error),
+    // #[error("Request failed: {0}")]
+    // Request(#[from] reqwest::Error),
 
     #[error("Bad URL: {0}")]
     BadUrl(#[from] url::ParseError),

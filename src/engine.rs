@@ -29,41 +29,15 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
     let config = Arc::new(config);
     debug!("Parsed engine configuration");
 
-    let mut runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => Arc::new(runtime),
         Err(err) => {
             error!("failed to create runtime: {}", err);
             return ffi::FALSE;
         }
     };
-    let runtime_handle = runtime.handle().clone();
 
-    let (shutdown, rx) = tokio::sync::oneshot::channel();
-    let thread_handle = match std::thread::Builder::new()
-        .name("DG ASR Engine".to_string())
-        .spawn(|| {
-            info!("starting tokio runtime");
-            runtime.block_on(async {
-                info!("started tokio runtime");
-                rx.await.ok();
-            });
-            info!("dropping tokio runtime");
-            drop(runtime);
-            info!("dropped tokio runtime");
-        }) {
-        Ok(handle) => handle,
-        Err(err) => {
-            error!("failed to spawn runtime thread: {}", err);
-            return ffi::FALSE;
-        }
-    };
-
-    (*engine).obj = Box::into_raw(Box::new(Engine {
-        config,
-        thread_handle,
-        runtime_handle,
-        shutdown,
-    })) as *mut _;
+    (*engine).obj = Box::into_raw(Box::new(Engine { config, runtime })) as *mut _;
 
     info!("Opened engine");
     mrcp_engine_open_respond(engine, ffi::TRUE)
@@ -74,10 +48,13 @@ unsafe extern "C" fn engine_close(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_b
     let data = Box::from_raw((*engine).obj as *mut Engine);
     (*engine).obj = std::ptr::null_mut();
 
-    data.shutdown.send(()).ok();
-    info!("joining scheduler thread");
-    data.thread_handle.join().ok();
-    info!("joined scheduler thread");
+    if let Ok(runtime) = Arc::try_unwrap(data.runtime) {
+        info!("shutting down tokio runtime");
+        runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    } else {
+        warn!("there are outstanding tokio runtime handles; it may be dropped from another thread");
+    }
+
     mrcp_engine_close_respond(engine)
 }
 
@@ -90,7 +67,7 @@ unsafe extern "C" fn engine_create_channel(
     // Construct a new channel, box it, and leak the pointer. The box
     // will be reconstructed when the channel closes, and the
     // `Channel` will be deallocated correctly.
-    let channel_data = Channel::new(pool, data.config.clone(), data.runtime_handle.clone());
+    let channel_data = Channel::new(pool, data.config.clone(), data.runtime.clone());
     let channel_data = Box::into_raw(Box::new(channel_data));
 
     let caps = mpf_sink_stream_capabilities_create(pool);
@@ -153,9 +130,7 @@ impl Config {
 #[repr(C)]
 pub struct Engine {
     config: Arc<Config>,
-    thread_handle: std::thread::JoinHandle<()>,
-    runtime_handle: tokio::runtime::Handle,
-    shutdown: tokio::sync::oneshot::Sender<()>,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 /*
