@@ -1,4 +1,4 @@
-use crate::{channel::Channel, error::Error, ffi, helper::*};
+use crate::{channel::Channel, ffi, helper::*};
 use serde::Deserialize;
 use std::{ffi::CStr, ptr::NonNull, sync::Arc};
 

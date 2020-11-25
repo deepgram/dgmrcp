@@ -407,7 +407,7 @@ impl Channel {
         let req = req.body(()).unwrap();
 
         info!("Opening websocket connection");
-        let (socket, http_response) = match self
+        let (socket, _http_response) = match self
             .runtime
             .block_on(async_tungstenite::tokio::connect_async(req))
         {
@@ -804,8 +804,9 @@ impl Channel {
             }
         }
 
-        unsafe {
-            mrcp_engine_channel_message_send(self.channel.as_ptr(), message) != 0;
+        if unsafe { mrcp_engine_channel_message_send(self.channel.as_ptr(), message) } != ffi::TRUE
+        {
+            return Err(());
         }
 
         Ok(())
