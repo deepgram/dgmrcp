@@ -4,6 +4,7 @@ use crate::{
     helper::*,
     stem::{StreamingResponse, Summary},
 };
+use async_tungstenite::tungstenite;
 use bytes::BytesMut;
 use futures::prelude::*;
 use itertools::Itertools;
@@ -14,7 +15,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite;
 use xml::writer::XmlEvent;
 
 mod send_ptr {
@@ -409,7 +409,7 @@ impl Channel {
         info!("Opening websocket connection");
         let (socket, http_response) = match self
             .runtime_handle
-            .block_on(tokio_tungstenite::connect_async(req))
+            .block_on(async_tungstenite::tokio::connect_async(req))
         {
             Ok(pair) => pair,
             Err(err) => {
