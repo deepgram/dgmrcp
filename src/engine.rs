@@ -120,6 +120,7 @@ pub struct Config {
     // parameters, but this allows us to unblock someone right now.
     pub numerals: Option<bool>,
     pub ner: Option<bool>,
+    pub plugin: Option<String>,
 }
 
 impl Config {

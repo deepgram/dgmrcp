@@ -84,6 +84,16 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HeaderDeserializer {
         visitor.visit_string(s.to_string())
     }
 
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let pair = unsafe { ffi::apt_pair_array_get(self.header, self.index) };
+        let s = unsafe { (*pair).value.as_str() };
+        let value = s.parse().map_err(serde::de::Error::custom)?;
+        visitor.visit_bool(value)
+    }
+
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -105,7 +115,6 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HeaderDeserializer {
     }
 
     serde::forward_to_deserialize_any! {
-            bool
             i8 i16 i32 i64 i128
             u8 u16 u32 u64 u128
             f32 f64
