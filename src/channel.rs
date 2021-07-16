@@ -204,6 +204,15 @@ impl Channel {
         struct VendorHeaders {
             #[serde(rename = "com.deepgram.model")]
             model: Option<String>,
+
+            #[serde(rename = "com.deepgram.numerals")]
+            numerals: Option<bool>,
+
+            #[serde(rename = "com.deepgram.ner")]
+            ner: Option<bool>,
+
+            #[serde(rename = "com.deepgram.plugin")]
+            plugin: Option<String>,
         }
 
         let vendor_headers: VendorHeaders = if unsafe {
@@ -397,13 +406,22 @@ impl Channel {
         if let Some(language) = recognize_language.or(self.config.language.as_deref()) {
             url.query_pairs_mut().append_pair("language", language);
         }
-        if let Some(numerals) = self.config.numerals {
+        if let Some(numerals) = vendor_headers.numerals.or(self.config.numerals) {
             url.query_pairs_mut()
                 .append_pair("numerals", if numerals { "true" } else { "false" });
         }
-        if let Some(ner) = self.config.ner {
+        if let Some(ner) = vendor_headers.ner.or(self.config.ner) {
             url.query_pairs_mut()
                 .append_pair("ner", if ner { "true" } else { "false" });
+        }
+        if let Some(plugins) = vendor_headers.plugin.as_deref().or(self.config.plugin.as_deref()) {
+            // We split on the comma here because it's easier than
+            // implementing it in the deserializer. It would be worth
+            // implementaing there if we want to support more
+            // multi-valued query params.
+            for plugin in plugins.split(',') {
+                url.query_pairs_mut().append_pair("plugin", plugin);
+            }
         }
 
         info!("Building request to {}", url);

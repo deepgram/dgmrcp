@@ -48,11 +48,16 @@ The following options can be specified:
 
 The following [vendor-specific
 parameters](https://tools.ietf.org/html/rfc6787#section-6.2.16) are
-supported:
+supported in a `RECOGNIZE` or `SET-PARAMS` message. In cases where a
+parameter can specified both here and in the plugin config, the
+parameters here take precedence.
 
 | name | value | description |
 | ---  | ---   | ---
-| com.deepgram.model | string | Specify the ASR model to use for this request. |
+| com.deepgram.model | string | The ASR model to use. |
+| com.deepgram.ner | bool | Enable/disable named entity recognition. |
+| com.deepgram.numerals | bool | Enable/disable the numerals feature. |
+| com.deepgram.plugin | string | Configure a plugin. Multiple plugins can be given, separated by commas. |
 
 ## Building
 
