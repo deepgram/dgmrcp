@@ -121,6 +121,7 @@ pub struct Config {
     pub numerals: Option<bool>,
     pub ner: Option<bool>,
     pub plugin: Option<String>,
+    pub keywords: Option<String>,
 }
 
 impl Config {

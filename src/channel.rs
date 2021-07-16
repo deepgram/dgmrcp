@@ -213,6 +213,9 @@ impl Channel {
 
             #[serde(rename = "com.deepgram.plugin")]
             plugin: Option<String>,
+
+            #[serde(rename = "com.deepgram.keywords")]
+            keywords: Option<String>,
         }
 
         let vendor_headers: VendorHeaders = if unsafe {
@@ -414,7 +417,20 @@ impl Channel {
             url.query_pairs_mut()
                 .append_pair("ner", if ner { "true" } else { "false" });
         }
-        if let Some(plugins) = vendor_headers.plugin.as_deref().or(self.config.plugin.as_deref()) {
+        if let Some(keywords) = vendor_headers
+            .keywords
+            .as_deref()
+            .or(self.config.keywords.as_deref())
+        {
+            for keyword in keywords.split(',') {
+                url.query_pairs_mut().append_pair("keywords", keyword);
+            }
+        }
+        if let Some(plugins) = vendor_headers
+            .plugin
+            .as_deref()
+            .or(self.config.plugin.as_deref())
+        {
             // We split on the comma here because it's easier than
             // implementing it in the deserializer. It would be worth
             // implementaing there if we want to support more

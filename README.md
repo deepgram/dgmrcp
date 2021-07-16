@@ -58,6 +58,7 @@ parameters here take precedence.
 | com.deepgram.ner | bool | Enable/disable named entity recognition. |
 | com.deepgram.numerals | bool | Enable/disable the numerals feature. |
 | com.deepgram.plugin | string | Configure a plugin. Multiple plugins can be given, separated by commas. |
+| com.deepgram.keywords | string | Boost keywords. Multiple keywords can be given, separated by commas. |
 
 ## Building
 
