@@ -113,6 +113,13 @@ pub struct Config {
     pub model: Option<String>,
     pub language: Option<String>,
     pub sensitivity_level: Option<f32>,
+
+    // These should be considered instantly deprecated.
+    //
+    // What we really need is a general way to insert arbitrary query
+    // parameters, but this allows us to unblock someone right now.
+    pub numerals: Option<bool>,
+    pub ner: Option<bool>,
 }
 
 impl Config {

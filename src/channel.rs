@@ -397,6 +397,14 @@ impl Channel {
         if let Some(language) = recognize_language.or(self.config.language.as_deref()) {
             url.query_pairs_mut().append_pair("language", language);
         }
+        if let Some(numerals) = self.config.numerals {
+            url.query_pairs_mut()
+                .append_pair("numerals", if numerals { "true" } else { "false" });
+        }
+        if let Some(ner) = self.config.ner {
+            url.query_pairs_mut()
+                .append_pair("ner", if ner { "true" } else { "false" });
+        }
 
         info!("Building request to {}", url);
 
