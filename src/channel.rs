@@ -211,6 +211,9 @@ impl Channel {
             #[serde(rename = "com.deepgram.ner")]
             ner: Option<bool>,
 
+            #[serde(rename = "com.deepgram.no_delay")]
+            no_delay: Option<bool>,
+
             #[serde(rename = "com.deepgram.plugin")]
             plugin: Option<String>,
 
@@ -416,6 +419,10 @@ impl Channel {
         if let Some(ner) = vendor_headers.ner.or(self.config.ner) {
             url.query_pairs_mut()
                 .append_pair("ner", if ner { "true" } else { "false" });
+        }
+        if let Some(no_delay) = vendor_headers.no_delay.or(self.config.no_delay) {
+            url.query_pairs_mut()
+                .append_pair("no_delay", if no_delay { "true" } else { "false" });
         }
         if let Some(keywords) = vendor_headers
             .keywords

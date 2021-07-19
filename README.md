@@ -57,6 +57,7 @@ parameters here take precedence.
 | com.deepgram.model | string | The ASR model to use. |
 | com.deepgram.ner | bool | Enable/disable named entity recognition. |
 | com.deepgram.numerals | bool | Enable/disable the numerals feature. |
+| com.deepgram.no_delay | bool | Enable/disable the `no_delay` flag. |
 | com.deepgram.plugin | string | Configure a plugin. Multiple plugins can be given, separated by commas. |
 | com.deepgram.keywords | string | Boost keywords. Multiple keywords can be given, separated by commas. |
 
