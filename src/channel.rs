@@ -219,6 +219,9 @@ impl Channel {
 
             #[serde(rename = "com.deepgram.keywords")]
             keywords: Option<String>,
+
+            #[serde(rename = "com.deepgram.keyword_boost")]
+            keyword_boost: Option<String>,
         }
 
         let vendor_headers: VendorHeaders = if unsafe {
@@ -423,6 +426,10 @@ impl Channel {
         if let Some(no_delay) = vendor_headers.no_delay.or(self.config.no_delay) {
             url.query_pairs_mut()
                 .append_pair("no_delay", if no_delay { "true" } else { "false" });
+        }
+        if let Some(keyword_boost) = vendor_headers.keyword_boost.or(self.config.keyword_boost) {
+            url.query_pairs_mut()
+                .append_pair("keyword_boost", &keyword_boost);
         }
         if let Some(keywords) = vendor_headers
             .keywords

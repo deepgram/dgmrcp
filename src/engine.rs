@@ -123,6 +123,7 @@ pub struct Config {
     pub no_delay: Option<bool>,
     pub plugin: Option<String>,
     pub keywords: Option<String>,
+    pub keyword_boost: Option<String>,
 }
 
 impl Config {
