@@ -60,6 +60,7 @@ parameters here take precedence.
 | com.deepgram.no_delay | bool | Enable/disable the `no_delay` flag. |
 | com.deepgram.plugin | string | Configure a plugin. Multiple plugins can be given, separated by commas. |
 | com.deepgram.keywords | string | Boost keywords. Multiple keywords can be given, separated by commas. |
+| com.deepgram.keyword_boost | string | Specify either `standard` or `legacy` keyword boosting strategy. |
 
 ## Building
 
