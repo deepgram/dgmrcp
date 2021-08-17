@@ -1,6 +1,6 @@
 [package]
 name = "dgmrcp"
-version = "0.3.3"
+version = "0.3.4"
 authors = [
   "Adam Sypniewski <ajsyp@syptech.net>",
   "Anthony Deschamps <anthony.j.deschamps@gmail.com>",
