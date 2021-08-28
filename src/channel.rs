@@ -655,6 +655,12 @@ impl Channel {
             .map(|alt| !alt.transcript.is_empty())
             .unwrap_or(false);
 
+        let cause = if contains_speech {
+            ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS
+        } else {
+            ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_MATCH
+        };
+
         if !self.detector.speaking && contains_speech {
             info!("speaking false => true");
             self.detector.speaking = true;
@@ -667,7 +673,7 @@ impl Channel {
             // care about; we'll still need to wait until the WS
             // closes though.
             self.end_of_input(
-                ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                cause,
             );
         }
 
@@ -681,6 +687,7 @@ impl Channel {
             self.results.push(response);
 
             if self.config.stream_results {
+                self.completion_cause = Some(cause);
                 match self.send_recognition_complete() {
                     Ok(()) => self.results.clear(),
                     Err(()) => error!("Failed to send results"),
@@ -689,6 +696,7 @@ impl Channel {
         }
 
         if speech_final {
+            self.completion_cause = Some(cause);
             match self.send_recognition_complete() {
                 Ok(()) => self.results.clear(),
                 Err(()) => error!("Failed to send results"),
