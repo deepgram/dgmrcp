@@ -427,7 +427,7 @@ impl Channel {
             url.query_pairs_mut()
                 .append_pair("no_delay", if no_delay { "true" } else { "false" });
         }
-        if let Some(keyword_boost) = vendor_headers.keyword_boost.or(self.config.keyword_boost) {
+        if let Some(keyword_boost) = vendor_headers.keyword_boost.or(self.config.keyword_boost.clone()) {
             url.query_pairs_mut()
                 .append_pair("keyword_boost", &keyword_boost);
         }
