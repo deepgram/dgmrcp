@@ -155,7 +155,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut AprTableDeserializer {
         struct Access<'b> {
             fields: &'static [&'static str],
             deserializer: &'b mut AprTableDeserializer,
-        };
+        }
 
         impl<'de, 'b> SeqAccess<'de> for Access<'b> {
             type Error = Error;
