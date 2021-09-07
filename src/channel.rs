@@ -1,8 +1,8 @@
 use crate::{
+    deepgram::{StreamingResponse, Summary},
     engine::Config,
     ffi,
     helper::*,
-    stem::{StreamingResponse, Summary},
 };
 use async_tungstenite::tungstenite;
 use bytes::BytesMut;
@@ -560,8 +560,8 @@ impl Channel {
                 #[derive(Deserialize)]
                 #[serde(untagged)]
                 enum Message {
-                    Results(crate::stem::StreamingResponse),
-                    Summary(crate::stem::Summary),
+                    Results(StreamingResponse),
+                    Summary(Summary),
                 }
 
                 match msg {

@@ -1,4 +1,4 @@
-//! Stem API and client integration.
+//! Deepgram API and client integration.
 
 use serde::Deserialize;
 
