@@ -26,10 +26,15 @@ fn main() {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|_| {
-            ["/usr/local/unimrcp/include", "/usr/local/apr/include/apr-1"]
-                .iter()
-                .map(|&x| x.to_string())
-                .collect::<Vec<_>>()
+            [
+                "/opt/unimrcp/include",
+                "/opt/unimrcp/include/apr-1",
+                "/usr/local/unimrcp/include",
+                "/usr/local/apr/include/apr-1",
+            ]
+            .iter()
+            .map(|&x| x.to_string())
+            .collect::<Vec<_>>()
         });
 
     includes.push(native().to_string_lossy().to_string());
