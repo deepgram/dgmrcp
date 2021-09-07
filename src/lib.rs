@@ -16,7 +16,9 @@
 //!    `/usr/local/unimrcp/conf/unimrcpserver.xml`). Under the `plugin-factory`
 //!    section, make sure you have a field like this:
 //!
-//!      <engine id="Deepgram" name="libdgmrcp" enable="true"/>
+//! ```xml
+//! <engine id="Deepgram" name="libdgmrcp" enable="true"/>
+//! ```
 //!
 //! # Return values
 //!
@@ -60,6 +62,7 @@ pub mod ffi {
     #![allow(non_snake_case)]
     #![allow(dead_code)]
     #![allow(clippy::all)]
+    #![allow(rustdoc::broken_intra_doc_links)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
     pub const FALSE: apt_bool_t = 0;

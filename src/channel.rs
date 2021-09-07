@@ -427,7 +427,10 @@ impl Channel {
             url.query_pairs_mut()
                 .append_pair("no_delay", if no_delay { "true" } else { "false" });
         }
-        if let Some(keyword_boost) = vendor_headers.keyword_boost.or(self.config.keyword_boost.clone()) {
+        if let Some(keyword_boost) = vendor_headers
+            .keyword_boost
+            .or(self.config.keyword_boost.clone())
+        {
             url.query_pairs_mut()
                 .append_pair("keyword_boost", &keyword_boost);
         }
@@ -672,9 +675,7 @@ impl Channel {
             // point, we've sent more audio to the backend than we
             // care about; we'll still need to wait until the WS
             // closes though.
-            self.end_of_input(
-                cause,
-            );
+            self.end_of_input(cause);
         }
 
         // Copy the boolean because we're about to pass ownership of
@@ -894,7 +895,7 @@ impl Channel {
             // callback will block.
             //
             // TODO: If we don't want to allow for blocked packets,
-            // thin it shouldn't really matter where we block. If we
+            // then it shouldn't really matter where we block. If we
             // do want to allow for dropped packets, then which is the
             // better place to handle that? If we don't want dropped
             // packets, but we also don't want to block here, then we
