@@ -43,7 +43,6 @@
 extern crate log;
 
 pub mod channel;
-pub mod codec;
 pub mod config;
 pub mod deepgram;
 pub mod engine;

@@ -1,4 +1,4 @@
-use crate::{channel::Channel, codec::Codec, ffi, frame::Frame, helper::*};
+use crate::{channel::Channel, ffi, frame::Frame, helper::*};
 use std::sync::{Arc, Mutex};
 
 /// Define the engine v-table
@@ -21,10 +21,10 @@ unsafe extern "C" fn stream_destroy(stream: *mut ffi::mpf_audio_stream_t) -> ffi
 
 unsafe extern "C" fn stream_open(
     stream: *mut ffi::mpf_audio_stream_t,
-    codec: *mut ffi::mpf_codec_t,
+    _codec: *mut ffi::mpf_codec_t,
 ) -> ffi::apt_bool_t {
     info!("stream_open");
-    Stream::wrap(stream).open(&mut codec.into()) as ffi::apt_bool_t
+    Stream::wrap(stream).open() as ffi::apt_bool_t
 }
 
 unsafe extern "C" fn stream_close(stream: *mut ffi::mpf_audio_stream_t) -> ffi::apt_bool_t {
@@ -41,19 +41,9 @@ unsafe extern "C" fn stream_write(
 
 pub struct Stream(*mut ffi::mpf_audio_stream_t);
 
-impl From<*mut ffi::mpf_audio_stream_t> for Stream {
-    fn from(ptr: *mut ffi::mpf_audio_stream_t) -> Self {
-        Self::wrap(ptr)
-    }
-}
-
 impl Stream {
     fn wrap(ptr: *mut ffi::mpf_audio_stream_t) -> Self {
         Self(ptr)
-    }
-
-    pub fn into_inner(self) -> *mut ffi::mpf_audio_stream_t {
-        self.0
     }
 
     fn destroy(self) {
@@ -61,7 +51,7 @@ impl Stream {
         unimplemented!()
     }
 
-    fn open(&mut self, _codec: &mut Codec) -> bool {
+    fn open(&mut self) -> bool {
         debug!("Opening a Deepgram ASR Stream; direction = {:x}", unsafe {
             (*self.0).direction
         });
