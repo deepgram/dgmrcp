@@ -21,7 +21,7 @@ impl serde::de::Error for Error {
 }
 
 /// Deserialize a struct from an array of vendor specific parameters.
-pub fn from_header_array<'a, T>(header: *mut ffi::apt_pair_arr_t) -> Result<T>
+pub unsafe fn from_header_array<'a, T>(header: *mut ffi::apt_pair_arr_t) -> Result<T>
 where
     T: Deserialize<'a>,
 {

@@ -36,6 +36,10 @@ pub fn from_apr_table<'a, T>(table: *const ffi::apr_table_t) -> Result<T, Error>
 where
     T: Deserialize<'a>,
 {
+    if table.is_null() {
+        error!("No configuration was provided.");
+        return Err(Error::NotFound);
+    }
     let mut deserializer = AprTableDeserializer { table, field: None };
     let t = T::deserialize(&mut deserializer)?;
     Ok(t)

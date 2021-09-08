@@ -200,6 +200,16 @@ impl Channel {
             }
         }
 
+        let headers = match Headers::new(request) {
+            Some(headers) => headers,
+            None => {
+                error!("Failed to get headers");
+                response.start_line.status_code =
+                    ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+                return;
+            }
+        };
+
         #[derive(Debug, Default, Deserialize)]
         struct VendorHeaders {
             #[serde(rename = "com.deepgram.model")]
@@ -224,89 +234,38 @@ impl Channel {
             keyword_boost: Option<String>,
         }
 
-        let vendor_headers: VendorHeaders = if unsafe {
-            mrcp_generic_header_property_check(
-                request,
-                ffi::mrcp_generic_header_id::GENERIC_HEADER_VENDOR_SPECIFIC_PARAMS,
-            )
-        } {
-            let generic_headers = unsafe { mrcp_generic_header_get(request) };
-            match crate::vendor_params::from_header_array(unsafe {
-                (*generic_headers).vendor_specific_params
-            }) {
-                Ok(headers) => headers,
-                Err(err) => {
-                    error!("Failed to deserialize headers: {}", err);
-                    response.start_line.status_code =
-                        ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
-                    return;
-                }
+        let vendor_headers: VendorHeaders = match headers.vendor_headers() {
+            Ok(headers) => headers,
+            Err(err) => {
+                error!("Failed to deserialize headers. err={}", err);
+                response.start_line.status_code =
+                    ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
+                return;
             }
-        } else {
-            Default::default()
         };
 
-        let headers = unsafe { mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t };
-        if headers.is_null() {
-            warn!("Failed to get headers");
-            response.start_line.status_code =
-                ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
-            return;
+        if let Some(start_input_timers) = headers.start_input_timers() {
+            self.timers_started = start_input_timers;
         }
 
-        if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_START_INPUT_TIMERS,
-            )
-        } {
-            self.timers_started = unsafe { (*headers).start_input_timers };
-        }
-
-        if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_NO_INPUT_TIMEOUT,
-            )
-        } {
+        if let Some(timeout) = headers.no_input_timeout() {
             if let Some(detector) = self.detector.activity_detector {
                 unsafe {
-                    ffi::mpf_activity_detector_noinput_timeout_set(
-                        detector.as_ptr(),
-                        (*headers).no_input_timeout,
-                    );
+                    ffi::mpf_activity_detector_noinput_timeout_set(detector.as_ptr(), timeout);
                 }
             }
         }
 
-        if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT,
-            )
-        } {
+        if let Some(timeout) = headers.speech_complete_timeout() {
             if let Some(detector) = self.detector.activity_detector {
                 unsafe {
-                    ffi::mpf_activity_detector_silence_timeout_set(
-                        detector.as_ptr(),
-                        (*headers).speech_complete_timeout,
-                    );
+                    ffi::mpf_activity_detector_silence_timeout_set(detector.as_ptr(), timeout);
                 }
             }
         }
 
-        let header_sensitivity = if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SENSITIVITY_LEVEL,
-            )
-        } {
-            unsafe { Some((*headers).sensitivity_level) }
-        } else {
-            None
-        };
-
-        let sensitivity = header_sensitivity
+        let sensitivity = headers
+            .sensitivity_level()
             .or(self.config.sensitivity_level)
             .unwrap_or(Channel::DEFAULT_SENSITIVITY_LEVEL);
 
@@ -319,16 +278,8 @@ impl Channel {
             }
         }
 
-        let recognize_language = if unsafe {
-            mrcp_resource_header_property_check(
-                request,
-                ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_SPEECH_LANGUAGE,
-            )
-        } {
-            unsafe { Some((*headers).speech_language.as_str()) }
-        } else {
-            None
-        };
+        let recognize_language = headers.speech_language();
+        let recognize_language = recognize_language.as_ref().map(|s| s.as_str());
 
         // Determine whether the body contains a grammar.
 
@@ -998,4 +949,65 @@ unsafe extern "C" fn channel_process_request(
         });
 
     ffi::TRUE
+}
+
+/// Provides safe access to header values from a
+/// [`ffi::mrcp_message_t`].
+struct Headers {
+    request: *const ffi::mrcp_message_t,
+    headers: NonNull<ffi::mrcp_recog_header_t>,
+}
+
+macro_rules! header_accessors {
+    ($($field:ident($header_id:ident) -> $type:ty;)*) => {
+        $(
+            fn $field(&self) -> Option<$type> {
+                let header_id = ffi::mrcp_recognizer_header_id::$header_id;
+
+                let present = apt_header_section_field_check(
+                    unsafe { &(*self.request).header.header_section },
+                    ffi::mrcp_generic_header_id::GENERIC_HEADER_COUNT + header_id,
+                );
+
+                if present {
+                    Some(unsafe{self.headers.as_ref().$field})
+                } else {
+                    None
+                }
+            }
+        )*
+    };
+}
+
+impl Headers {
+    fn new(request: *const ffi::mrcp_message_t) -> Option<Self> {
+        let headers = unsafe { mrcp_resource_header_get(request) as *mut ffi::mrcp_recog_header_t };
+        let headers = NonNull::new(headers)?;
+        Some(Headers { request, headers })
+    }
+
+    fn vendor_headers<'d, T: Default + Deserialize<'d>>(&self) -> crate::vendor_params::Result<T> {
+        if !unsafe {
+            mrcp_generic_header_property_check(
+                self.request,
+                ffi::mrcp_generic_header_id::GENERIC_HEADER_VENDOR_SPECIFIC_PARAMS,
+            )
+        } {
+            return Ok(T::default());
+        }
+
+        let generic_headers = unsafe { mrcp_generic_header_get(self.request) };
+
+        unsafe {
+            crate::vendor_params::from_header_array((*generic_headers).vendor_specific_params)
+        }
+    }
+
+    header_accessors!(
+        start_input_timers(RECOGNIZER_HEADER_START_INPUT_TIMERS) -> ffi::apt_bool_t;
+        no_input_timeout(RECOGNIZER_HEADER_NO_INPUT_TIMEOUT) -> ffi::apr_size_t;
+        speech_complete_timeout(RECOGNIZER_HEADER_SPEECH_COMPLETE_TIMEOUT) -> ffi::apr_size_t;
+        sensitivity_level(RECOGNIZER_HEADER_SENSITIVITY_LEVEL) -> f32;
+        speech_language(RECOGNIZER_HEADER_SPEECH_LANGUAGE) -> ffi::apt_str_t;
+    );
 }

@@ -125,7 +125,7 @@ pub unsafe fn mrcp_generic_header_property_check(
     message: *const ffi::mrcp_message_t,
     id: ffi::mrcp_generic_header_id::Type,
 ) -> bool {
-    apt_header_section_field_check(&(*message).header.header_section as *const _, id)
+    apt_header_section_field_check(&(*message).header.header_section, id)
 }
 
 pub unsafe fn mrcp_generic_header_prepare(
@@ -141,27 +141,9 @@ pub unsafe fn mrcp_resource_header_get(message: *const ffi::mrcp_message_t) -> *
     (*message).header.resource_header_accessor.data
 }
 
-pub unsafe fn mrcp_resource_header_property_check(
-    message: *const ffi::mrcp_message_t,
+pub fn apt_header_section_field_check(
+    header: &ffi::apt_header_section_t,
     id: ffi::mrcp_recognizer_header_id::Type,
 ) -> bool {
-    apt_header_section_field_check(
-        &(*message).header.header_section as *const _,
-        id + ffi::mrcp_generic_header_id::GENERIC_HEADER_COUNT,
-    )
-}
-
-pub unsafe fn apt_header_section_field_check(
-    header: *const ffi::apt_header_section_t,
-    id: ffi::mrcp_recognizer_header_id::Type,
-) -> bool {
-    if (id as usize) < (*header).arr_size {
-        if (*(*header).arr.add(id as usize)).is_null() {
-            false
-        } else {
-            true
-        }
-    } else {
-        false
-    }
+    (id as usize) < header.arr_size && unsafe { !(*header.arr.add(id as usize)).is_null() }
 }
