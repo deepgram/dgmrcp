@@ -916,6 +916,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9dfe2523e6fa84ddf5e688151d4e5fddc51678de9752c6512a24714c23818d61"
 dependencies = [
  "autocfg",
+ "futures-core",
  "lazy_static",
  "libc",
  "mio",

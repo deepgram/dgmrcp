@@ -854,7 +854,7 @@ pub enum RecognizeError {
 async fn run_recognize(
     channel: Weak<Mutex<Channel>>,
     request: http::Request<()>,
-    mut rx: mpsc::Receiver<tungstenite::Message>,
+    rx: mpsc::Receiver<tungstenite::Message>,
 ) -> Result<(), RecognizeError> {
     info!("Opening websocket connection");
     let (socket, _http_response) = async_tungstenite::tokio::connect_async(request)
@@ -864,29 +864,21 @@ async fn run_recognize(
             RecognizeError::Connection(err)
         })?;
 
-    let (mut ws_tx, mut ws_rx) = socket.split();
+    let (ws_tx, mut ws_rx) = socket.split();
 
     let write = async move {
         info!("Begin writing to websocket");
 
-        // TODO: Use StreamExt::forward ?
-
-        while let Some(msg) = rx.recv().await {
-            debug!("writing to WS");
-            ws_tx.send(msg).await.map_err(|err| {
+        let finished = tungstenite::Message::Binary(vec![]);
+        rx.chain(stream::once(future::ready(finished)))
+            .map(Ok)
+            .forward(ws_tx)
+            .await
+            .map_err(|err| {
                 warn!("Websocket connection closed: {}", err);
                 RecognizeError::Connection(err)
             })?;
-        }
 
-        let end = tungstenite::Message::Binary(vec![]);
-        debug!("writing end message to WS");
-        ws_tx.send(end).await.map_err(|err| {
-            warn!("Websocket connection closed: {}", err);
-            RecognizeError::Connection(err)
-        })?;
-
-        drop(ws_tx);
         info!("Done writing to websocket");
 
         Ok(())
