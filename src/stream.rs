@@ -1,4 +1,4 @@
-use crate::{channel::Channel, ffi, frame::Frame, helper::*};
+use crate::{channel::Channel, ffi, helper::*};
 use std::sync::{Arc, Mutex};
 
 /// Define the engine v-table
@@ -36,7 +36,7 @@ unsafe extern "C" fn stream_write(
     stream: *mut ffi::mpf_audio_stream_t,
     frame: *const ffi::mpf_frame_t,
 ) -> ffi::apt_bool_t {
-    Stream::wrap(stream).write(&mut frame.into()) as ffi::apt_bool_t
+    Stream::wrap(stream).write(&*frame) as ffi::apt_bool_t
 }
 
 pub struct Stream(*mut ffi::mpf_audio_stream_t);
@@ -63,8 +63,8 @@ impl Stream {
         true
     }
 
-    fn write(&mut self, frame: &mut Frame) -> bool {
-        trace!("write :: frame.type={}", frame.get().type_);
+    fn write(&mut self, frame: &ffi::mpf_frame_t) -> bool {
+        trace!("write :: frame.type={}", frame.type_);
 
         let recog_channel = unsafe { &mut *((*self.0).obj as *mut Arc<Mutex<Channel>>) };
         let mut recog_channel = recog_channel.lock().unwrap();
@@ -91,8 +91,7 @@ impl Stream {
             .activity_detector
             .filter(|_| !recog_channel.detector.speaking)
         {
-            let event =
-                unsafe { ffi::mpf_activity_detector_process(detector.as_ptr(), frame.get()) };
+            let event = unsafe { ffi::mpf_activity_detector_process(detector.as_ptr(), frame) };
             match event {
                 ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_ACTIVITY => {
                     debug!("Detected voice activity.");
@@ -128,20 +127,21 @@ impl Stream {
             }
         }
 
-        if (frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)
+        if (frame.type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32)
             == ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_EVENT as i32
         {
-            if frame.get().marker == ffi::mpf_frame_marker_e::MPF_MARKER_START_OF_EVENT as i32 {
+            if frame.marker == ffi::mpf_frame_marker_e::MPF_MARKER_START_OF_EVENT as i32 {
                 debug!("Detected start of event.");
-            } else if frame.get().marker == ffi::mpf_frame_marker_e::MPF_MARKER_END_OF_EVENT as i32
-            {
+            } else if frame.marker == ffi::mpf_frame_marker_e::MPF_MARKER_END_OF_EVENT as i32 {
                 debug!("Detected end of event.");
             }
         }
 
-        if frame.get().type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_AUDIO as i32 != 0 {
-            trace!("Received {} bytes of audio.", frame.get().codec_frame.size);
-            recog_channel.buffer.extend_from_slice(frame.codec_frame());
+        if frame.type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_AUDIO as i32 != 0 {
+            trace!("Received {} bytes of audio.", frame.codec_frame.size);
+            recog_channel
+                .buffer
+                .extend_from_slice(frame.codec_frame.as_slice());
             if let Err(_) = recog_channel.flush() {
                 return false;
             }

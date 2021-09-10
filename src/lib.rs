@@ -47,7 +47,6 @@ pub mod config;
 pub mod deepgram;
 pub mod engine;
 pub mod error;
-pub mod frame;
 pub mod helper;
 pub mod logging;
 pub mod stream;
@@ -55,6 +54,11 @@ pub mod utils;
 pub mod vendor_params;
 
 /// Import the MRCP Engine bindings.
+///
+/// This module also implements a few associated functions. They are
+/// mainly simple conversions between C styles and Rust styles, such
+/// as casting a (pointer, length) pair to a slice. They are ad-hoc
+/// and added as needed.
 pub mod ffi {
     #![allow(non_upper_case_globals)]
     #![allow(non_camel_case_types)]
@@ -78,6 +82,13 @@ pub mod ffi {
         pub fn as_str(&self) -> &str {
             let slice = unsafe { std::slice::from_raw_parts(self.buf as *const u8, self.length) };
             std::str::from_utf8(slice).expect("all strings should be UTF-8")
+        }
+    }
+
+    impl mpf_codec_frame_t {
+        /// Access the codec frame as a byte slice.
+        pub fn as_slice(&self) -> &[u8] {
+            unsafe { std::slice::from_raw_parts(self.buffer as *const u8, self.size) }
         }
     }
 }
