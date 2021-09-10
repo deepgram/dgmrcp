@@ -1,0 +1,30 @@
+# This isn't strictly necessary for development, but
+# https://starship.rs is an excellent terminal prompt.
+
+- name: Check for starship
+  command: starship --version
+  register: installed
+  ignore_errors: yes
+  changed_when: false
+
+- name: Download starship installer
+  get_url:
+    url: https://starship.rs/install.sh
+    dest: /tmp/starship-installer.sh
+    mode: 'u+rwx'
+  when: installed.rc != 0
+  register: download
+
+- name: Run the starship installer
+  command: /tmp/starship-installer.sh --yes
+  when: download.changed
+
+- name: Remove the starship installer
+  file:
+    path: /tmp/starship-installer.sh
+    state: absent
+
+- name: Install starship hook
+  lineinfile:
+    path: /home/vagrant/.bashrc
+    line: eval "$(starship init bash)"

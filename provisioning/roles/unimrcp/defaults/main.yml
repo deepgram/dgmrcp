@@ -1,0 +1,2 @@
+UNIMRCP_USERNAME: '{{ lookup("env", "UNIMRCP_USERNAME") }}'
+UNIMRCP_PASSWORD: '{{ lookup("env", "UNIMRCP_PASSWORD") }}'

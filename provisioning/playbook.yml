@@ -1,0 +1,10 @@
+- hosts: all
+  become: yes
+
+  roles:
+    - role: hurricanehrndz.rustup
+      rustup_user: vagrant
+      rustup_cargo_crates: []
+
+    - core
+    - unimrcp

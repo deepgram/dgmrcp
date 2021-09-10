@@ -1,0 +1,14 @@
+- name: UniMRCP YUM repo
+  yum_repository:
+    name: UniMRCP
+    description: UniMRCP Packages for Red Hat / Cent OS-$releasever $basearch
+    baseurl: https://{{ UNIMRCP_USERNAME }}:{{ UNIMRCP_PASSWORD }}@unimrcp.org/repo/yum/main/rhel$releasever/$basearch
+    gpgkey: https://unimrcp.org/keys/unimrcp-gpg-key.public
+    gpgcheck: true
+      
+- name: UniMRCP development packages
+  yum:
+    state: present
+    name:
+      - unimrcp-server-devel
+      - unimrcp-client-devel

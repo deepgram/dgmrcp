@@ -1,0 +1,9 @@
+- name: Install tools
+  yum:
+    state: present
+    name:
+      - curl
+      - clang
+      - gcc
+      - llvm-devel
+      - gdb
