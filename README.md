@@ -65,10 +65,22 @@ parameters here take precedence.
 ## Building
 
 A Dockerfile is provided that will download and build UniMRCP and its
-dependencies, as well as build the server plugin.
+dependencies, as well as build the server plugin. This is used by
+GitHub Actions to build the plugin for releases.
+
+The build environment itself downloads UniMRCP from its package
+repo. In order to access the package repo, you need credentials, which
+can be acquired from the [UniMRCP website]. These credentials must be
+passed to the Docker build environment:
+
+[UniMRCP website]: https://unimrcp.org/profile-registration
 
 ```bash
-$ docker build -t dgmrcp .
+$ docker build \
+    --build-arg UNIMRCP_USERNAME=$UNIMRCP_USERNAME \
+    --build-arg $UNIMRCP_PASSWORD=$UNIMRCP_PASSWORD \
+    -t dgmrcp \
+    .
 ```
 
 In order to extract the plugin, we need to create a container from the
@@ -79,6 +91,68 @@ CONTAINER=$(docker create dgmrcp) \
   && docker cp $CONTAINER:/dgmrcp/target/release/libdgmrcp.so ./ \
   && docker rm $CONTAINER
 ```
+
+> If there is a better way to extract a file from a Docker image
+> without creating an intermediate container, please let us know!
+
+## Development
+
+While the Docker image can be used for local development, it may be
+more convenient to work in a VM. A [Vagrantfile](./Vagrantfile) is
+provided along with some Ansible roles to get you up and running. As
+with the Docker image, you'll need credentials for the UniMRCP RPM
+repository.
+
+```bash
+vagrant up
+
+# If you edit the Ansible roles or if something fails during the initial setup:
+vagrant provision
+
+vagrant ssh
+```
+
+To get started with development, follow these steps:
+
+1. Build the `dgmrcp` plugin in the shared folder that is mounted in
+   the VM, and copy or symlink it into the UniMRCP plugin directory.
+
+```bash
+cd /vagrant
+cargo build
+
+sudo mkdir /opt/unimrcp/plugin
+ln -s /vagrant/target/debug/libdgmrcp.so /opt/unimrcp/plugin/
+```
+
+2. Edit the UniMRCP server config file at
+   `/opt/unimrcp/conf/unimrcpserver.xml`, and add the `dgmrcp` plugin
+   to the `<plugin-factory>` section as described above.
+
+3. Run the UniMRCP server.
+
+```bash
+cd /opt/unimrcp/bin
+./unimrcpserver
+```
+
+4. Run the UniMRCP client CLI and send a test request. UniMRCP
+   includes two clients, `unimrcpclient` and `umc`, which have similar
+   but maybe slightly different features. Their source code is found
+   [here](https://github.com/unispeech/unimrcp/tree/master/platforms).
+
+```bash
+cd /opt/unimrcp/bin
+./unimrcpclient
+> run recog
+```
+
+If all goes well, both the client and the server should show logs
+that, among other messages, include a `RECOGNIZE` and
+`RECOGNITION-COMPLETE` message. If this doesn't work or if these
+instructions are unclear, please [open an issue] or a PR!
+
+[open an issue]: https://github.com/deepgram/dgmrcp/issues
 
 ## License
 
