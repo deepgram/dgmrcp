@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::{
     ffi::{CStr, CString},
     ptr::NonNull,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::mpsc;
 use xml::writer::XmlEvent;
@@ -37,6 +37,27 @@ mod send_ptr {
 }
 use send_ptr::SendPtr;
 
+/// A state machine for sending data to the WebSocket write task.
+///
+/// The main purpose for this is to have a sink to write to before the
+/// WebSocket connection has been established. We basically use an
+/// `mpsc::channel` as a shared buffer between two threads without
+/// having to deal with other synchronization primitives.
+///
+/// An alternative design that was considered was to have the
+/// channel/stream and the WS task share a buffer. However, that would
+/// require locking the buffer and signalling a notify, which would
+/// probably result in some blocking behaviour.
+enum Sink {
+    Uninitialized,
+    Ready(mpsc::Sender<tungstenite::Message>),
+    Running {
+        tx: mpsc::Sender<tungstenite::Message>,
+        buffer: BytesMut,
+    },
+    Finished,
+}
+
 #[repr(C)]
 pub struct Channel {
     pub channel: NonNull<ffi::mrcp_engine_channel_t>,
@@ -44,9 +65,8 @@ pub struct Channel {
     pub stop_response: Option<*mut ffi::mrcp_message_t>,
     pub timers_started: ffi::apt_bool_t,
     pub detector: Vad,
-    sink: Option<mpsc::Sender<tungstenite::Message>>,
+    sink: Sink,
     results: Vec<StreamingResponse>,
-    pub buffer: BytesMut,
     chunk_size: usize,
     completion_cause: Option<ffi::mrcp_recog_completion_cause_e::Type>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -112,9 +132,8 @@ impl Channel {
             timers_started: ffi::FALSE,
             // This will be set before the end of this function.
             channel: NonNull::dangling(),
-            sink: None,
+            sink: Sink::Uninitialized,
             results: Vec::new(),
-            buffer: BytesMut::new(),
             chunk_size: config.chunk_size as usize,
             completion_cause: None,
             runtime,
@@ -327,8 +346,8 @@ impl Channel {
             }
         }
 
-        let (tx, mut rx) = mpsc::channel(1024);
-        self.sink = Some(tx);
+        let (tx, rx) = mpsc::channel(1024);
+        self.sink = Sink::Ready(tx);
         let codec_descriptor =
             unsafe { ffi::mrcp_engine_sink_stream_codec_get(self.channel.as_ptr()) };
         if codec_descriptor.is_null() {
@@ -412,75 +431,12 @@ impl Channel {
 
         let mut req = http::Request::builder().uri(url.as_str());
         if let Some(auth) = auth {
-            req = req.header("Authorization", format!("Basic {}", base64::encode(auth)))
+            let mut value: http::HeaderValue =
+                format!("Basic {}", base64::encode(auth)).parse().unwrap();
+            value.set_sensitive(true);
+            req = req.header("Authorization", value);
         }
         let req = req.body(()).unwrap();
-
-        info!("Opening websocket connection");
-        let (socket, _http_response) = match self
-            .runtime
-            .block_on(async_tungstenite::tokio::connect_async(req))
-        {
-            Ok(pair) => pair,
-            Err(err) => {
-                error!("Failed to open WebSocket connection: {}", err);
-                // TODO: this is not the right response code.
-                response.start_line.status_code =
-                    ffi::mrcp_status_code_e::MRCP_STATUS_CODE_METHOD_FAILED;
-
-                let header = unsafe {
-                    mrcp_resource_header_prepare(response) as *mut ffi::mrcp_recog_header_t
-                };
-                unsafe {
-                    (*header).completion_cause =
-                        ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_ERROR;
-                    ffi::mrcp_resource_header_property_add(
-                        response,
-                        ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
-                    );
-
-                    let reason = match err {
-                        tungstenite::Error::Http(http::StatusCode::UNAUTHORIZED) => CStr::from_bytes_with_nul_unchecked(b"Check that credentials are properly configured.\0"),
-                        tungstenite::Error::Http(http::StatusCode::FORBIDDEN) => CStr::from_bytes_with_nul_unchecked(b"Check that the requested model is valid.\0"),
-                        _ => CStr::from_bytes_with_nul_unchecked(b"Check that credentials are properly configured and the requested model is valid.\0")
-                    };
-
-                    apt_string_assign(
-                        &mut (*header).completion_reason,
-                        reason.as_ptr(),
-                        (*response).pool,
-                    );
-
-                    ffi::mrcp_resource_header_property_add(
-                        response,
-                        ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_REASON
-                            as usize,
-                    );
-                }
-
-                return;
-            }
-        };
-
-        let (mut ws_tx, mut ws_rx) = socket.split();
-
-        let write = async move {
-            info!("Begin writing to websocket");
-
-            while let Some(msg) = rx.recv().await {
-                if let Err(err) = ws_tx.send(msg).await {
-                    warn!("Websocket connection closed: {}", err);
-                }
-            }
-
-            let end = tungstenite::Message::Binary(vec![]);
-            if let Err(err) = ws_tx.send(end).await {
-                warn!("Websocket connection closed: {}", err);
-            }
-
-            drop(ws_tx);
-            info!("Done writing to websocket");
-        };
 
         // This is a really weird self-referential expression. The
         // `ffi::mrcp_engine_channel_t` owns the `Channel` struct via
@@ -494,71 +450,23 @@ impl Channel {
         // multiple mutable references to the `Arc` itself (one here
         // and one further up the call stack), but since we aren't
         // going to modify the `Arc`, this _should_ be safe.
-        let channel = unsafe {
+        let channel: Weak<_> = unsafe {
             let arc = &mut *(self.channel.as_ref().method_obj as *mut Arc<Mutex<Channel>>);
             Arc::downgrade(arc)
         };
-        let read = async move {
-            while let Some(msg) = ws_rx.next().await {
-                trace!("received ws msg: {:?}", msg);
 
-                let msg = match msg {
-                    Ok(msg) => msg,
-                    Err(tungstenite::Error::ConnectionClosed) => break,
-                    Err(err) => {
-                        warn!("WebSocket error: {}", err);
-                        continue;
-                    }
-                };
+        self.runtime.spawn(async move {
+            let response = run_recognize(channel.clone(), req, rx).await;
 
-                #[derive(Deserialize)]
-                #[serde(untagged)]
-                enum Message {
-                    Results(StreamingResponse),
-                    Summary(Summary),
+            if let Some(channel) = channel.upgrade() {
+                let mut channel = channel.lock().unwrap();
+                if let Err(()) = channel.send_recognition_complete(response) {
+                    warn!("Failed to send RECOGNITION-COMPLETE.");
                 }
-
-                match msg {
-                    tungstenite::Message::Close(_) => {
-                        info!("Websocket is closing");
-                        break;
-                    }
-                    tungstenite::Message::Text(buf) => {
-                        let msg: Message = match serde_json::from_str(&buf) {
-                            Ok(msg) => msg,
-                            Err(err) => {
-                                warn!("Failed to deserialize streaming response: {}", err);
-                                debug!("{}", buf);
-                                continue;
-                            }
-                        };
-
-                        let channel = match channel.upgrade() {
-                            None => {
-                                // TODO: Should this really be an
-                                // error? It is actually very normal
-                                // to send `RECOGNITION-COMPLETE`,
-                                // close the channel, and _then_
-                                // receive few more results or a
-                                // summary message from the backend.
-                                error!("Channel has been deallocated");
-                                return;
-                            }
-                            Some(ptr) => ptr,
-                        };
-                        let mut channel = channel.lock().unwrap();
-
-                        match msg {
-                            Message::Results(msg) => channel.results_available(msg),
-                            Message::Summary(msg) => channel.results_summary(msg),
-                        }
-                    }
-                    _ => warn!("Unhandled WS message type"),
-                }
+            } else {
+                warn!("Channel has already been deallocated.");
             }
-        };
-
-        self.runtime.spawn(future::join(write, read));
+        });
 
         info!("handled RECOGNIZE request");
         response.start_line.request_state =
@@ -640,7 +548,7 @@ impl Channel {
 
             if self.config.stream_results {
                 self.completion_cause = Some(cause);
-                match self.send_recognition_complete() {
+                match self.send_recognition_complete(Ok(())) {
                     Ok(()) => self.results.clear(),
                     Err(()) => error!("Failed to send results"),
                 }
@@ -649,7 +557,7 @@ impl Channel {
 
         if speech_final {
             self.completion_cause = Some(cause);
-            match self.send_recognition_complete() {
+            match self.send_recognition_complete(Ok(())) {
                 Ok(()) => self.results.clear(),
                 Err(()) => error!("Failed to send results"),
             }
@@ -721,7 +629,7 @@ impl Channel {
             return;
         }
 
-        match self.send_recognition_complete() {
+        match self.send_recognition_complete(Ok(())) {
             Ok(()) => (),
             Err(()) => error!("failed to send recognition results"),
         }
@@ -729,16 +637,48 @@ impl Channel {
         self.recog_request.take();
     }
 
+    /// Send any buffered audio and close the writer.
+    ///
+    /// This will cause the `write` task that sends messages to the
+    /// Deepgram API to complete. If we haven't already received ASR
+    /// results, then this will in turn cause the API to return its
+    /// final results, and then send a `RECOGNITION-COMPLETE` message
+    /// if it hasn't been sent already.
     pub fn end_of_input(&mut self, cause: ffi::mrcp_recog_completion_cause_e::Type) {
         debug!("end_of_input");
 
-        if self.sink.take().is_some() {
-            info!("closed write end of channel");
+        let mut sink = Sink::Finished;
+        std::mem::swap(&mut self.sink, &mut sink);
+        let closed = match sink {
+            Sink::Uninitialized => {
+                error!("Sink is not initialized.");
+                false
+            }
+
+            // Nothing to send.
+            Sink::Ready(_) => true,
+            Sink::Running { tx, mut buffer } => {
+                let message = tungstenite::Message::binary(buffer.split().as_ref());
+                if let Err(err) = tx.try_send(message) {
+                    error!("failed to send buffer: {}", err);
+                }
+                true
+            }
+            Sink::Finished => false,
+        };
+
+        if closed {
+            info!("Closed write end of channel");
         }
+        self.sink = Sink::Finished;
         self.completion_cause = Some(cause);
     }
 
-    pub fn send_recognition_complete(&mut self) -> Result<(), ()> {
+    // TODO: Handle error case.
+    pub fn send_recognition_complete(
+        &mut self,
+        result: Result<(), RecognizeError>,
+    ) -> Result<(), ()> {
         debug!("send recognition complete");
 
         // If there isn't an active request, then that means we've
@@ -749,7 +689,10 @@ impl Channel {
         let cause = self
             .completion_cause
             .take()
-            .unwrap_or(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS);
+            .unwrap_or_else(|| match result {
+                Ok(()) => ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
+                Err(_) => ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_ERROR,
+            });
 
         let message = unsafe {
             ffi::mrcp_event_create(
@@ -775,6 +718,27 @@ impl Channel {
                 message,
                 ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_CAUSE as usize,
             );
+        }
+
+        if let Err(err) = result {
+            unsafe {
+                let reason = match err {
+                RecognizeError::Connection(tungstenite::Error::Http(http::StatusCode::UNAUTHORIZED)) => CStr::from_bytes_with_nul_unchecked(b"Check that credentials are properly configured.\0"),
+                RecognizeError::Connection(tungstenite::Error::Http(http::StatusCode::FORBIDDEN)) => CStr::from_bytes_with_nul_unchecked(b"Check that the requested model is valid.\0"),
+                _ => CStr::from_bytes_with_nul_unchecked(b"Check that credentials are properly configured and the requested model is valid.\0"),
+            };
+
+                apt_string_assign(
+                    &mut (*header).completion_reason,
+                    reason.as_ptr(),
+                    (*message).pool,
+                );
+
+                ffi::mrcp_resource_header_property_add(
+                    message,
+                    ffi::mrcp_recognizer_header_id::RECOGNIZER_HEADER_COMPLETION_REASON as usize,
+                );
+            }
         }
 
         unsafe {
@@ -828,16 +792,27 @@ impl Channel {
         Ok(())
     }
 
-    pub fn flush(&mut self) -> Result<(), ()> {
-        while self.buffer.len() >= self.chunk_size {
-            let sink = match self.sink.as_mut() {
-                Some(sink) => sink,
-                None => {
-                    warn!("no websocket sink");
-                    return Err(());
-                }
-            };
-            let message = tungstenite::Message::binary(self.buffer.split().as_ref());
+    pub fn buffer_data_and_flush(&mut self, data: &[u8]) -> Result<(), ()> {
+        let mut sink = match self.sink {
+            Sink::Finished => Sink::Finished,
+            _ => Sink::Uninitialized,
+        };
+        std::mem::swap(&mut self.sink, &mut sink);
+        let (tx, mut buffer) = match sink {
+            Sink::Uninitialized => {
+                error!("Sink is uninitialized");
+                return Err(());
+            }
+            Sink::Ready(tx) => (tx, BytesMut::new()),
+            Sink::Running { tx, buffer } => (tx, buffer),
+            // This is a normal case.
+            Sink::Finished => return Ok(()),
+        };
+
+        buffer.extend_from_slice(data);
+
+        while buffer.len() >= self.chunk_size {
+            let message = tungstenite::Message::binary(buffer.split().as_ref());
 
             // Although this blocks on an async call, it should
             // normally return very quickly. The only reason why it
@@ -853,14 +828,134 @@ impl Channel {
             // should switch to an unbounded channel so that we we can
             // enqueue messages from this thread, ensuring they are
             // placed in the correct order.
-            if let Err(err) = self.runtime.block_on(sink.send(message)) {
+            if let Err(err) = self.runtime.block_on(tx.send(message)) {
                 error!("failed to send buffer: {}", err);
                 return Err(());
             }
         }
 
+        // Set the new state of the sink state machine.
+        self.sink = Sink::Running { tx, buffer };
+
         Ok(())
     }
+}
+
+/// Various failure modes when processing a `RECOGNIZE` request.
+pub enum RecognizeError {
+    Connection(tungstenite::Error),
+
+    /// The server closed the connection.
+    ServerClose,
+}
+
+/// Run the recognize requeest and return a `RECOGNITION-COMPLETE`
+/// message. Other events will also be sent during this function..
+async fn run_recognize(
+    channel: Weak<Mutex<Channel>>,
+    request: http::Request<()>,
+    mut rx: mpsc::Receiver<tungstenite::Message>,
+) -> Result<(), RecognizeError> {
+    info!("Opening websocket connection");
+    let (socket, _http_response) = async_tungstenite::tokio::connect_async(request)
+        .await
+        .map_err(|err| {
+            error!("Failed to open WebSocket connection: {}", err);
+            RecognizeError::Connection(err)
+        })?;
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let write = async move {
+        info!("Begin writing to websocket");
+
+        // TODO: Use StreamExt::forward ?
+
+        while let Some(msg) = rx.recv().await {
+            debug!("writing to WS");
+            ws_tx.send(msg).await.map_err(|err| {
+                warn!("Websocket connection closed: {}", err);
+                RecognizeError::Connection(err)
+            })?;
+        }
+
+        let end = tungstenite::Message::Binary(vec![]);
+        debug!("writing end message to WS");
+        ws_tx.send(end).await.map_err(|err| {
+            warn!("Websocket connection closed: {}", err);
+            RecognizeError::Connection(err)
+        })?;
+
+        drop(ws_tx);
+        info!("Done writing to websocket");
+
+        Ok(())
+    };
+
+    let read = async move {
+        while let Some(msg) = ws_rx.next().await {
+            trace!("received ws msg: {:?}", msg);
+
+            let msg = match msg {
+                Ok(msg) => msg,
+                Err(tungstenite::Error::ConnectionClosed) => break,
+                Err(err) => {
+                    warn!("WebSocket error: {}", err);
+                    continue;
+                }
+            };
+
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Message {
+                Results(StreamingResponse),
+                Summary(Summary),
+            }
+
+            match msg {
+                tungstenite::Message::Close(_) => {
+                    info!("Websocket is closing");
+                    return Err(RecognizeError::ServerClose);
+                }
+                tungstenite::Message::Text(buf) => {
+                    let msg: Message = match serde_json::from_str(&buf) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            warn!("Failed to deserialize streaming response: {}", err);
+                            debug!("{}", buf);
+                            continue;
+                        }
+                    };
+
+                    let channel = match channel.upgrade() {
+                        None => {
+                            // TODO: Should this really be an
+                            // error? It is actually very normal
+                            // to send `RECOGNITION-COMPLETE`,
+                            // close the channel, and _then_
+                            // receive few more results or a
+                            // summary message from the backend.
+                            error!("Channel has been deallocated");
+                            return Ok(());
+                        }
+                        Some(ptr) => ptr,
+                    };
+                    let mut channel = channel.lock().unwrap();
+
+                    match msg {
+                        Message::Results(msg) => channel.results_available(msg),
+                        Message::Summary(msg) => channel.results_summary(msg),
+                    }
+                }
+                _ => warn!("Unhandled WS message type"),
+            }
+        }
+
+        Result::<(), RecognizeError>::Ok(())
+    };
+
+    future::try_join(write, read).await?;
+    Ok(())
 }
 
 unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {

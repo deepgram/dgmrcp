@@ -106,18 +106,12 @@ impl Stream {
                 }
                 ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_INACTIVITY => {
                     debug!("Detected voice inactivity.");
-                    if let Err(_) = recog_channel.flush() {
-                        return false;
-                    }
                     recog_channel.end_of_input(
                         ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_SUCCESS,
                     );
                 }
                 ffi::mpf_detector_event_e::MPF_DETECTOR_EVENT_NOINPUT => {
                     debug!("Detected no input.");
-                    if let Err(_) = recog_channel.flush() {
-                        return false;
-                    }
                     if recog_channel.timers_started == ffi::TRUE {
                         recog_channel.end_of_input(ffi::mrcp_recog_completion_cause_e::RECOGNIZER_COMPLETION_CAUSE_NO_INPUT_TIMEOUT);
                     }
@@ -139,10 +133,7 @@ impl Stream {
 
         if frame.type_ & ffi::mpf_frame_type_e::MEDIA_FRAME_TYPE_AUDIO as i32 != 0 {
             trace!("Received {} bytes of audio.", frame.codec_frame.size);
-            recog_channel
-                .buffer
-                .extend_from_slice(frame.codec_frame.as_slice());
-            if let Err(_) = recog_channel.flush() {
+            if let Err(_) = recog_channel.buffer_data_and_flush(frame.codec_frame.as_slice()) {
                 return false;
             }
         }
