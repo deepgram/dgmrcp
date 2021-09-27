@@ -96,6 +96,30 @@ pub struct Vad {
     pub activity_detector: Option<NonNull<ffi::mpf_activity_detector_t>>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct VendorHeaders {
+    #[serde(rename = "com.deepgram.model")]
+    model: Option<String>,
+
+    #[serde(rename = "com.deepgram.numerals")]
+    numerals: Option<bool>,
+
+    #[serde(rename = "com.deepgram.ner")]
+    ner: Option<bool>,
+
+    #[serde(rename = "com.deepgram.no_delay")]
+    no_delay: Option<bool>,
+
+    #[serde(rename = "com.deepgram.plugin")]
+    plugin: Option<String>,
+
+    #[serde(rename = "com.deepgram.keywords")]
+    keywords: Option<String>,
+
+    #[serde(rename = "com.deepgram.keyword_boost")]
+    keyword_boost: Option<String>,
+}
+
 impl Channel {
     /// Define the channel v-table
     pub const VTABLE: ffi::mrcp_engine_channel_method_vtable_t =
@@ -229,30 +253,6 @@ impl Channel {
             }
         };
 
-        #[derive(Debug, Default, Deserialize)]
-        struct VendorHeaders {
-            #[serde(rename = "com.deepgram.model")]
-            model: Option<String>,
-
-            #[serde(rename = "com.deepgram.numerals")]
-            numerals: Option<bool>,
-
-            #[serde(rename = "com.deepgram.ner")]
-            ner: Option<bool>,
-
-            #[serde(rename = "com.deepgram.no_delay")]
-            no_delay: Option<bool>,
-
-            #[serde(rename = "com.deepgram.plugin")]
-            plugin: Option<String>,
-
-            #[serde(rename = "com.deepgram.keywords")]
-            keywords: Option<String>,
-
-            #[serde(rename = "com.deepgram.keyword_boost")]
-            keyword_boost: Option<String>,
-        }
-
         let vendor_headers: VendorHeaders = match headers.vendor_headers() {
             Ok(headers) => headers,
             Err(err) => {
@@ -363,69 +363,15 @@ impl Channel {
             (Some(username), Some(password)) => Some(format!("{}:{}", username, password)),
             _ => None,
         };
-        let mut url = self.config.brain_url.join("listen/stream").unwrap();
-        // TODO: Perhaps these should not be hardcoded?
-        url.query_pairs_mut()
-            .append_pair("endpointing", "true")
-            // TODO: The default value is 60 ms, but it's easier to
-            // test things with a large buffer. This should be
-            // configurable anyway.
-            .append_pair("vad_turnoff", "300")
-            .append_pair("interim_results", "true")
-            .append_pair("encoding", "linear16")
-            .append_pair("sample_rate", unsafe {
-                &(*codec_descriptor).sampling_rate.to_string()
-            })
-            .append_pair("channels", unsafe {
-                &(*codec_descriptor).channel_count.to_string()
-            });
-        if let Some(model) = vendor_headers.model.or_else(|| self.config.model.clone()) {
-            url.query_pairs_mut().append_pair("model", &model);
-        }
-        if let Some(language) = recognize_language.or(self.config.language.as_deref()) {
-            url.query_pairs_mut().append_pair("language", language);
-        }
-        if let Some(numerals) = vendor_headers.numerals.or(self.config.numerals) {
-            url.query_pairs_mut()
-                .append_pair("numerals", if numerals { "true" } else { "false" });
-        }
-        if let Some(ner) = vendor_headers.ner.or(self.config.ner) {
-            url.query_pairs_mut()
-                .append_pair("ner", if ner { "true" } else { "false" });
-        }
-        if let Some(no_delay) = vendor_headers.no_delay.or(self.config.no_delay) {
-            url.query_pairs_mut()
-                .append_pair("no_delay", if no_delay { "true" } else { "false" });
-        }
-        if let Some(keyword_boost) = vendor_headers
-            .keyword_boost
-            .or(self.config.keyword_boost.clone())
-        {
-            url.query_pairs_mut()
-                .append_pair("keyword_boost", &keyword_boost);
-        }
-        if let Some(keywords) = vendor_headers
-            .keywords
-            .as_deref()
-            .or(self.config.keywords.as_deref())
-        {
-            for keyword in keywords.split(',') {
-                url.query_pairs_mut().append_pair("keywords", keyword);
-            }
-        }
-        if let Some(plugins) = vendor_headers
-            .plugin
-            .as_deref()
-            .or(self.config.plugin.as_deref())
-        {
-            // We split on the comma here because it's easier than
-            // implementing it in the deserializer. It would be worth
-            // implementaing there if we want to support more
-            // multi-valued query params.
-            for plugin in plugins.split(',') {
-                url.query_pairs_mut().append_pair("plugin", plugin);
-            }
-        }
+        let sample_rate = unsafe { &(*codec_descriptor).sampling_rate.to_string() };
+        let channel_count = unsafe { &(*codec_descriptor).channel_count.to_string() };
+        let url = build_url(
+            sample_rate,
+            channel_count,
+            recognize_language,
+            &vendor_headers,
+            &self.config,
+        );
 
         info!("Building request to {}", url);
 
@@ -950,6 +896,81 @@ async fn run_recognize(
     Ok(())
 }
 
+fn build_url(
+    sample_rate: &str,
+    channel_count: &str,
+    recognize_language: Option<&str>,
+    vendor_headers: &VendorHeaders,
+    config: &Config,
+) -> url::Url {
+    let mut url = config.brain_url.join("listen/stream").unwrap();
+    // TODO: Perhaps these should not be hardcoded?
+    url.query_pairs_mut()
+        .append_pair("endpointing", "true")
+        // TODO: The default value is 60 ms, but it's easier to
+        // test things with a large buffer. This should be
+        // configurable anyway.
+        .append_pair("vad_turnoff", "300")
+        .append_pair("interim_results", "true")
+        .append_pair("encoding", "linear16")
+        .append_pair("sample_rate", sample_rate)
+        .append_pair("channels", channel_count);
+    if let Some(model) = vendor_headers
+        .model
+        .as_ref()
+        .or_else(|| config.model.as_ref())
+    {
+        url.query_pairs_mut().append_pair("model", &model);
+    }
+    if let Some(language) = recognize_language.or(config.language.as_deref()) {
+        url.query_pairs_mut().append_pair("language", language);
+    }
+    if let Some(numerals) = vendor_headers.numerals.or(config.numerals) {
+        url.query_pairs_mut()
+            .append_pair("numerals", if numerals { "true" } else { "false" });
+    }
+    if let Some(ner) = vendor_headers.ner.or(config.ner) {
+        url.query_pairs_mut()
+            .append_pair("ner", if ner { "true" } else { "false" });
+    }
+    if let Some(no_delay) = vendor_headers.no_delay.or(config.no_delay) {
+        url.query_pairs_mut()
+            .append_pair("no_delay", if no_delay { "true" } else { "false" });
+    }
+    if let Some(keyword_boost) = vendor_headers
+        .keyword_boost
+        .as_ref()
+        .or(config.keyword_boost.as_ref())
+    {
+        url.query_pairs_mut()
+            .append_pair("keyword_boost", &keyword_boost);
+    }
+    if let Some(keywords) = vendor_headers
+        .keywords
+        .as_deref()
+        .or(config.keywords.as_deref())
+    {
+        for keyword in keywords.split(',') {
+            url.query_pairs_mut().append_pair("keywords", keyword);
+        }
+    }
+    if let Some(plugins) = vendor_headers
+        .plugin
+        .as_deref()
+        .or(config.plugin.as_deref())
+    {
+        // We split on the comma here because it's easier than
+        // implementing it in the deserializer. It would be worth
+        // implementaing there if we want to support more
+        // multi-valued query params.
+        for plugin in plugins.split(',') {
+            url.query_pairs_mut().append_pair("plugin", plugin);
+        }
+    }
+
+    url
+}
+
 unsafe extern "C" fn channel_destroy(_channel: *mut ffi::mrcp_engine_channel_t) -> ffi::apt_bool_t {
     debug!("Destroying Deepgram ASR channel.");
     ffi::TRUE
@@ -1097,4 +1118,372 @@ impl Headers {
         sensitivity_level(RECOGNIZER_HEADER_SENSITIVITY_LEVEL) -> f32;
         speech_language(RECOGNIZER_HEADER_SPEECH_LANGUAGE) -> ffi::apt_str_t;
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get_config() -> Config {
+        Config {
+            brain_url: url::Url::parse("wss://here.lan").unwrap(),
+            brain_username: None,
+            brain_password: None,
+            chunk_size: 32,
+            keyword_boost: None,
+            keywords: None,
+            language: None,
+            model: None,
+            ner: None,
+            no_delay: None,
+            numerals: None,
+            plaintext_results: false,
+            plugin: None,
+            sensitivity_level: None,
+            stream_results: false,
+        }
+    }
+
+    mod build_response {
+        use super::{get_config, Channel, Sink, StreamingResponse, Vad};
+        use crate::{deepgram, ffi};
+        use pretty_assertions::assert_eq;
+        use std::{ptr::NonNull, sync::Arc};
+
+        fn get_channel() -> Channel {
+            Channel {
+                recog_request: None,
+                stop_response: None,
+                detector: Vad {
+                    speaking: false,
+                    activity_detector: None,
+                },
+                timers_started: ffi::FALSE,
+                channel: NonNull::dangling(),
+                sink: Sink::Uninitialized,
+                results: Vec::new(),
+                chunk_size: 32,
+                completion_cause: None,
+                runtime: Arc::new(tokio::runtime::Runtime::new().unwrap()),
+                config: Arc::new(get_config()),
+                request_grammars: vec![],
+            }
+        }
+
+        #[test]
+        fn with_single_response() {
+            let mut c = get_channel();
+            c.results = vec![StreamingResponse {
+                is_final: false,
+                speech_final: false,
+                channel_index: (0, 1),
+                duration: 30.2,
+                start: 15.9,
+                channel: deepgram::Channel {
+                    alternatives: vec![deepgram::Alternative {
+                        confidence: 29.2,
+                        transcript: "Hello, can you help me with".to_string(),
+                        words: vec![],
+                    }],
+                },
+            }];
+
+            let res = c.build_response(false).unwrap();
+            let actual = res.to_str().unwrap();
+            let expected = r#"<?xml version="1.0" encoding="utf-8"?>
+<result>
+  <interpretation confidence="29.2">
+    <instance>Hello, can you help me with</instance>
+    <input mode="speech">Hello, can you help me with</input>
+  </interpretation>
+</result>"#
+                .to_string();
+
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn with_multiple_responses() {
+            let mut c = get_channel();
+            c.results = vec![
+                StreamingResponse {
+                    is_final: false,
+                    speech_final: false,
+                    channel_index: (0, 1),
+                    duration: 3.1,
+                    start: 1.4,
+                    channel: deepgram::Channel {
+                        alternatives: vec![deepgram::Alternative {
+                            confidence: 29.2,
+                            transcript: "Hello, can you help me with".to_string(),
+                            words: vec![],
+                        }],
+                    },
+                },
+                StreamingResponse {
+                    is_final: false,
+                    speech_final: false,
+                    channel_index: (0, 1),
+                    duration: 0.5,
+                    start: 4.8,
+                    channel: deepgram::Channel {
+                        alternatives: vec![deepgram::Alternative {
+                            confidence: 89.2,
+                            transcript: "finding a pizza".to_string(),
+                            words: vec![],
+                        }],
+                    },
+                },
+                StreamingResponse {
+                    is_final: true,
+                    speech_final: false,
+                    channel_index: (0, 1),
+                    duration: 0.1,
+                    start: 5.3,
+                    channel: deepgram::Channel {
+                        alternatives: vec![
+                            deepgram::Alternative {
+                                confidence: 63.8,
+                                transcript: "store".to_string(),
+                                words: vec![],
+                            },
+                            deepgram::Alternative {
+                                confidence: 34.8,
+                                transcript: "shop".to_string(),
+                                words: vec![],
+                            },
+                        ],
+                    },
+                },
+            ];
+
+            let res = c.build_response(false).unwrap();
+            let actual = res.to_str().unwrap();
+            let expected = r#"<?xml version="1.0" encoding="utf-8"?>
+<result>
+  <interpretation confidence="63.8">
+    <instance>Hello, can you help me with finding a pizza store</instance>
+    <input mode="speech">Hello, can you help me with finding a pizza store</input>
+  </interpretation>
+</result>"#
+                .to_string();
+
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn to_ignore_empty_transcripts() {
+            let mut c = get_channel();
+            c.results = vec![
+                StreamingResponse {
+                    is_final: false,
+                    speech_final: false,
+                    channel_index: (0, 1),
+                    duration: 2.3,
+                    start: 2.9,
+                    channel: deepgram::Channel {
+                        alternatives: vec![deepgram::Alternative {
+                            confidence: 29.2,
+                            transcript: "Hello, can you help me with".to_string(),
+                            words: vec![],
+                        }],
+                    },
+                },
+                StreamingResponse {
+                    is_final: false,
+                    speech_final: false,
+                    channel_index: (0, 1),
+                    duration: 0.3,
+                    start: 5.2,
+                    channel: deepgram::Channel {
+                        alternatives: vec![deepgram::Alternative {
+                            confidence: 63.8,
+                            transcript: "".to_string(),
+                            words: vec![],
+                        }],
+                    },
+                },
+                StreamingResponse {
+                    is_final: true,
+                    speech_final: false,
+                    channel_index: (0, 1),
+                    duration: 1.8,
+                    start: 5.5,
+                    channel: deepgram::Channel {
+                        alternatives: vec![deepgram::Alternative {
+                            confidence: 89.2,
+                            transcript: "finding a pizza store".to_string(),
+                            words: vec![],
+                        }],
+                    },
+                },
+            ];
+
+            let res = c.build_response(false).unwrap();
+            let actual = res.to_str().unwrap();
+            let expected = r#"<?xml version="1.0" encoding="utf-8"?>
+<result>
+  <interpretation confidence="63.8">
+    <instance>Hello, can you help me with finding a pizza store</instance>
+    <input mode="speech">Hello, can you help me with finding a pizza store</input>
+  </interpretation>
+</result>"#
+                .to_string();
+
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn with_custom_grammar() {
+            let mut c = get_channel();
+            c.results = vec![StreamingResponse {
+                is_final: true,
+                speech_final: false,
+                channel_index: (0, 1),
+                duration: 0.3,
+                start: 0.9,
+                channel: deepgram::Channel {
+                    alternatives: vec![deepgram::Alternative {
+                        confidence: 97.2,
+                        transcript: "Hello".to_string(),
+                        words: vec![],
+                    }],
+                },
+            }];
+
+            c.request_grammars = vec!["en".to_string(), "fr".to_string()];
+            let res = c.build_response(false).unwrap();
+            let actual = res.to_str().unwrap();
+            let expected = r#"<?xml version="1.0" encoding="utf-8"?>
+<result>
+  <interpretation grammar="en" confidence="97.2">
+    <instance>Hello</instance>
+    <input mode="speech">Hello</input>
+  </interpretation>
+</result>"#
+                .to_string();
+
+            assert_eq!(actual, expected);
+        }
+    }
+
+    mod build_url {
+        use super::{build_url, get_config, Config, VendorHeaders};
+        use pretty_assertions::assert_eq;
+
+        fn get_vendor_headers() -> VendorHeaders {
+            VendorHeaders {
+                keyword_boost: None,
+                keywords: None,
+                model: None,
+                ner: None,
+                no_delay: None,
+                numerals: None,
+                plugin: None,
+            }
+        }
+
+        #[test]
+        fn basic() {
+            let config = get_config();
+            let vendor_headers = get_vendor_headers();
+
+            let actual = build_url("44000", "2", None, &vendor_headers, &config);
+            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2";
+
+            assert_eq!(actual.as_str(), expected);
+        }
+
+        #[test]
+        fn with_recognize_language() {
+            let config = get_config();
+            let vendor_headers = get_vendor_headers();
+
+            let actual = build_url("44000", "2", Some("ru"), &vendor_headers, &config);
+            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&language=ru";
+
+            assert_eq!(actual.as_str(), expected);
+        }
+
+        #[test]
+        fn with_populated_vendor_headers() {
+            let config = get_config();
+            let vendor_headers = VendorHeaders {
+                keyword_boost: Some("corporate".to_string()),
+                keywords: Some("agent".to_string()),
+                model: Some("model".to_string()),
+                ner: Some(true),
+                no_delay: Some(true),
+                numerals: Some(true),
+                plugin: Some("log,enhance".to_string()),
+            };
+
+            let actual = build_url("44000", "2", None, &vendor_headers, &config);
+            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&model=model&numerals=true&ner=true&no_delay=true&keyword_boost=corporate&keywords=agent&plugin=log&plugin=enhance";
+
+            assert_eq!(actual.as_str(), expected);
+        }
+
+        #[test]
+        fn with_populated_config() {
+            let config = Config {
+                brain_url: url::Url::parse("wss://here.lan").unwrap(),
+                brain_username: Some("user".to_string()),
+                brain_password: Some("password".to_string()),
+                chunk_size: 32,
+                language: Some("fr".to_string()),
+                plaintext_results: false,
+                sensitivity_level: Some(1.0),
+                stream_results: false,
+                keyword_boost: Some("vacation".to_string()),
+                keywords: Some("hotel".to_string()),
+                model: Some("mod".to_string()),
+                ner: Some(false),
+                no_delay: Some(false),
+                numerals: Some(false),
+                plugin: Some("enhance".to_string()),
+            };
+            let vendor_headers = get_vendor_headers();
+
+            let actual = build_url("44000", "2", None, &vendor_headers, &config);
+            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&model=mod&language=fr&numerals=false&ner=false&no_delay=false&keyword_boost=vacation&keywords=hotel&plugin=enhance";
+
+            assert_eq!(actual.as_str(), expected);
+        }
+
+        #[test]
+        fn with_populated_headers_and_config_and_recognize_language() {
+            let config = Config {
+                brain_url: url::Url::parse("wss://here.lan").unwrap(),
+                brain_username: Some("user".to_string()),
+                brain_password: Some("password".to_string()),
+                chunk_size: 32,
+                language: Some("fr".to_string()),
+                plaintext_results: false,
+                sensitivity_level: Some(1.0),
+                stream_results: false,
+                keyword_boost: Some("vacation".to_string()),
+                keywords: Some("hotel".to_string()),
+                model: Some("mod".to_string()),
+                ner: Some(false),
+                no_delay: Some(false),
+                numerals: Some(false),
+                plugin: Some("enhance".to_string()),
+            };
+            let vendor_headers = VendorHeaders {
+                keyword_boost: Some("corporate".to_string()),
+                keywords: Some("agent".to_string()),
+                model: Some("model".to_string()),
+                ner: Some(true),
+                no_delay: Some(true),
+                numerals: Some(true),
+                plugin: Some("log,enhance".to_string()),
+            };
+
+            let actual = build_url("44000", "2", Some("en"), &vendor_headers, &config);
+            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&model=model&language=en&numerals=true&ner=true&no_delay=true&keyword_boost=corporate&keywords=agent&plugin=log&plugin=enhance";
+
+            assert_eq!(actual.as_str(), expected);
+        }
+    }
 }
