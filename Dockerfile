@@ -15,6 +15,10 @@ gpgkey=https://unimrcp.org/keys/unimrcp-gpg-key.public" > /etc/yum.repos.d/unimr
 
 RUN yum install -y unimrcp-server-devel
 
+# Paths to find mrcp objects
+ENV C_INCLUDE_PATH="/opt/unimrcp/include/apr-1:/opt/unimrcp/include"
+ENV LD_LIBRARY_PATH="/opt/unimrcp/lib"
+
 
 # # Install Rust
 # COPY rust-toolchain /rust-toolchain
@@ -31,6 +35,5 @@ COPY Cargo.toml Cargo.lock ./
 COPY native native
 COPY build.rs ./
 COPY src src
-ENV MRCP_INCLUDE_PATH=/opt/unimrcp/include:/opt/unimrcp/include/apr-1
 RUN . $HOME/.cargo/env && cargo build --release
 RUN strip ./target/release/libdgmrcp.so
