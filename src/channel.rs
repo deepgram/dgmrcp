@@ -3,6 +3,7 @@ use crate::{
     engine::Config,
     ffi,
     helper::*,
+    vendor_params::VendorHeaders,
 };
 use async_tungstenite::tungstenite;
 use bytes::BytesMut;
@@ -94,30 +95,6 @@ pub struct Vad {
     /// doesn't incur the cost of network latency and backend
     /// processing time.
     pub activity_detector: Option<NonNull<ffi::mpf_activity_detector_t>>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct VendorHeaders {
-    #[serde(rename = "com.deepgram.model")]
-    model: Option<String>,
-
-    #[serde(rename = "com.deepgram.numerals")]
-    numerals: Option<bool>,
-
-    #[serde(rename = "com.deepgram.ner")]
-    ner: Option<bool>,
-
-    #[serde(rename = "com.deepgram.no_delay")]
-    no_delay: Option<bool>,
-
-    #[serde(rename = "com.deepgram.plugin")]
-    plugin: Option<String>,
-
-    #[serde(rename = "com.deepgram.keywords")]
-    keywords: Option<String>,
-
-    #[serde(rename = "com.deepgram.keyword_boost")]
-    keyword_boost: Option<String>,
 }
 
 impl Channel {
