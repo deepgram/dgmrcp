@@ -887,11 +887,18 @@ fn build_url(
         // TODO: The default value is 60 ms, but it's easier to
         // test things with a large buffer. This should be
         // configurable anyway.
-        .append_pair("vad_turnoff", "300")
+        // .append_pair("vad_turnoff", "300")
         .append_pair("interim_results", "true")
         .append_pair("encoding", "linear16")
         .append_pair("sample_rate", sample_rate)
         .append_pair("channels", channel_count);
+    if let Some(turnoff) = vendor_headers
+        .model
+        .as_ref()
+        .or_else(|| config.model.as_ref())
+    {
+        url.query_pairs_mut().append_pair("vad_turnoff", &turnoff);
+    }
     if let Some(model) = vendor_headers
         .model
         .as_ref()
@@ -1118,6 +1125,7 @@ mod tests {
             plugin: None,
             sensitivity_level: None,
             stream_results: false,
+            vad_turnoff: None,
         }
     }
 
@@ -1357,6 +1365,7 @@ mod tests {
                 no_delay: None,
                 numerals: None,
                 plugin: None,
+                vad_turnoff: None,
             }
         }
 
@@ -1393,6 +1402,7 @@ mod tests {
                 no_delay: Some(true),
                 numerals: Some(true),
                 plugin: Some("log,enhance".to_string()),
+                vad_turnoff: Some("300".to_string()),
             };
 
             let actual = build_url("44000", "2", None, &vendor_headers, &config);
@@ -1419,6 +1429,7 @@ mod tests {
                 no_delay: Some(false),
                 numerals: Some(false),
                 plugin: Some("enhance".to_string()),
+                vad_turnoff: None,
             };
             let vendor_headers = get_vendor_headers();
 
@@ -1446,6 +1457,7 @@ mod tests {
                 no_delay: Some(false),
                 numerals: Some(false),
                 plugin: Some("enhance".to_string()),
+                vad_turnoff: None,
             };
             let vendor_headers = VendorHeaders {
                 keyword_boost: Some("corporate".to_string()),
@@ -1455,6 +1467,7 @@ mod tests {
                 no_delay: Some(true),
                 numerals: Some(true),
                 plugin: Some("log,enhance".to_string()),
+                vad_turnoff: Some("300".to_string()),
             };
 
             let actual = build_url("44000", "2", Some("en"), &vendor_headers, &config);

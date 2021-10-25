@@ -182,6 +182,9 @@ pub struct VendorHeaders {
 
     #[serde(rename = "com.deepgram.keyword_boost")]
     pub keyword_boost: Option<String>,
+
+    #[serde(rename = "com.deepgram.keyword_boost")]
+    pub vad_turnoff: Option<String>,
 }
 
 #[cfg(test)]
@@ -291,6 +294,7 @@ mod tests {
             plugin: Some("noise,static".to_string()),
             keywords: Some("property".to_string()),
             keyword_boost: Some("agent".to_string()),
+            vad_turnoff: Some("300".to_string()),
         };
 
         assert_eq!(actual, expected);
