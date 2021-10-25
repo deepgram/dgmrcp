@@ -28,7 +28,6 @@ unsafe extern "C" fn engine_open(engine: *mut ffi::mrcp_engine_t) -> ffi::apt_bo
     };
     let config = Arc::new(config);
     debug!("Parsed engine configuration");
-    debug!("Set vad_turnoff: {:?}", &config.vad_turnoff);
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => Arc::new(runtime),

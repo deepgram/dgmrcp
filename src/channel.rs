@@ -893,24 +893,15 @@ fn build_url(
         .append_pair("channels", channel_count);
     if vendor_headers.vad_turnoff.is_none() && config.vad_turnoff.is_none() {
         url.query_pairs_mut().append_pair("vad_turnoff", "300");
-    }
-    else {
+    } else {
         if let Some(turnoff) = vendor_headers
-        .vad_turnoff
-        .as_ref()
-        .or_else(|| config.vad_turnoff.as_ref())
+            .vad_turnoff
+            .as_ref()
+            .or_else(|| config.vad_turnoff.as_ref())
         {
             url.query_pairs_mut().append_pair("vad_turnoff", &turnoff);
-        }  
+        }
     }
-
-    // if let Some(turnoff) = vendor_headers
-    //     .vad_turnoff
-    //     .as_ref()
-    //     .or_else(|| config.vad_turnoff.as_ref())
-    // {
-    //     url.query_pairs_mut().append_pair("vad_turnoff", &turnoff);
-    // }
     if let Some(model) = vendor_headers
         .model
         .as_ref()
