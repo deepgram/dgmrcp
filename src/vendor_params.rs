@@ -182,6 +182,9 @@ pub struct VendorHeaders {
 
     #[serde(rename = "com.deepgram.keyword_boost")]
     pub keyword_boost: Option<String>,
+
+    #[serde(rename = "com.deepgram.vad_turnoff")]
+    pub vad_turnoff: Option<String>,
 }
 
 #[cfg(test)]
@@ -281,6 +284,7 @@ mod tests {
             "com.deepgram.keyword_boost".to_string(),
             "agent".to_string(),
         );
+        arr.add("com.deepgram.vad_turnoff".to_string(), "500".to_string());
 
         let actual: VendorHeaders = unsafe { from_header_array(arr.array)? };
         let expected = VendorHeaders {
@@ -291,6 +295,7 @@ mod tests {
             plugin: Some("noise,static".to_string()),
             keywords: Some("property".to_string()),
             keyword_boost: Some("agent".to_string()),
+            vad_turnoff: Some("500".to_string()),
         };
 
         assert_eq!(actual, expected);

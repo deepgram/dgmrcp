@@ -887,11 +887,17 @@ fn build_url(
         // TODO: The default value is 60 ms, but it's easier to
         // test things with a large buffer. This should be
         // configurable anyway.
-        .append_pair("vad_turnoff", "300")
         .append_pair("interim_results", "true")
         .append_pair("encoding", "linear16")
         .append_pair("sample_rate", sample_rate)
         .append_pair("channels", channel_count);
+    if let Some(turnoff) = vendor_headers
+        .vad_turnoff
+        .as_ref()
+        .or_else(|| config.vad_turnoff.as_ref())
+    {
+        url.query_pairs_mut().append_pair("vad_turnoff", &turnoff);
+    }
     if let Some(model) = vendor_headers
         .model
         .as_ref()
@@ -1118,6 +1124,7 @@ mod tests {
             plugin: None,
             sensitivity_level: None,
             stream_results: false,
+            vad_turnoff: None,
         }
     }
 
@@ -1357,6 +1364,7 @@ mod tests {
                 no_delay: None,
                 numerals: None,
                 plugin: None,
+                vad_turnoff: None,
             }
         }
 
@@ -1366,7 +1374,7 @@ mod tests {
             let vendor_headers = get_vendor_headers();
 
             let actual = build_url("44000", "2", None, &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2";
 
             assert_eq!(actual.as_str(), expected);
         }
@@ -1377,7 +1385,7 @@ mod tests {
             let vendor_headers = get_vendor_headers();
 
             let actual = build_url("44000", "2", Some("ru"), &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&language=ru";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&language=ru";
 
             assert_eq!(actual.as_str(), expected);
         }
@@ -1393,10 +1401,11 @@ mod tests {
                 no_delay: Some(true),
                 numerals: Some(true),
                 plugin: Some("log,enhance".to_string()),
+                vad_turnoff: Some("500".to_string()),
             };
 
             let actual = build_url("44000", "2", None, &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&model=model&numerals=true&ner=true&no_delay=true&keyword_boost=corporate&keywords=agent&plugin=log&plugin=enhance";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&vad_turnoff=500&model=model&numerals=true&ner=true&no_delay=true&keyword_boost=corporate&keywords=agent&plugin=log&plugin=enhance";
 
             assert_eq!(actual.as_str(), expected);
         }
@@ -1419,11 +1428,12 @@ mod tests {
                 no_delay: Some(false),
                 numerals: Some(false),
                 plugin: Some("enhance".to_string()),
+                vad_turnoff: Some("200".to_string()),
             };
             let vendor_headers = get_vendor_headers();
 
             let actual = build_url("44000", "2", None, &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&model=mod&language=fr&numerals=false&ner=false&no_delay=false&keyword_boost=vacation&keywords=hotel&plugin=enhance";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&vad_turnoff=200&model=mod&language=fr&numerals=false&ner=false&no_delay=false&keyword_boost=vacation&keywords=hotel&plugin=enhance";
 
             assert_eq!(actual.as_str(), expected);
         }
@@ -1446,6 +1456,7 @@ mod tests {
                 no_delay: Some(false),
                 numerals: Some(false),
                 plugin: Some("enhance".to_string()),
+                vad_turnoff: Some("200".to_string()),
             };
             let vendor_headers = VendorHeaders {
                 keyword_boost: Some("corporate".to_string()),
@@ -1455,10 +1466,11 @@ mod tests {
                 no_delay: Some(true),
                 numerals: Some(true),
                 plugin: Some("log,enhance".to_string()),
+                vad_turnoff: Some("500".to_string()),
             };
 
             let actual = build_url("44000", "2", Some("en"), &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&vad_turnoff=300&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&model=model&language=en&numerals=true&ner=true&no_delay=true&keyword_boost=corporate&keywords=agent&plugin=log&plugin=enhance";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&vad_turnoff=500&model=model&language=en&numerals=true&ner=true&no_delay=true&keyword_boost=corporate&keywords=agent&plugin=log&plugin=enhance";
 
             assert_eq!(actual.as_str(), expected);
         }

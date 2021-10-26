@@ -113,6 +113,7 @@ pub struct Config {
     pub model: Option<String>,
     pub language: Option<String>,
     pub sensitivity_level: Option<f32>,
+    pub vad_turnoff: Option<String>,
 
     // These should be considered instantly deprecated.
     //
