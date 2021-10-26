@@ -891,16 +891,12 @@ fn build_url(
         .append_pair("encoding", "linear16")
         .append_pair("sample_rate", sample_rate)
         .append_pair("channels", channel_count);
-    if vendor_headers.vad_turnoff.is_none() && config.vad_turnoff.is_none() {
-        url.query_pairs_mut().append_pair("vad_turnoff", "300");
-    } else {
-        if let Some(turnoff) = vendor_headers
-            .vad_turnoff
-            .as_ref()
-            .or_else(|| config.vad_turnoff.as_ref())
-        {
-            url.query_pairs_mut().append_pair("vad_turnoff", &turnoff);
-        }
+    if let Some(turnoff) = vendor_headers
+        .vad_turnoff
+        .as_ref()
+        .or_else(|| config.vad_turnoff.as_ref())
+    {
+        url.query_pairs_mut().append_pair("vad_turnoff", &turnoff);
     }
     if let Some(model) = vendor_headers
         .model
@@ -1378,7 +1374,7 @@ mod tests {
             let vendor_headers = get_vendor_headers();
 
             let actual = build_url("44000", "2", None, &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&vad_turnoff=300";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2";
 
             assert_eq!(actual.as_str(), expected);
         }
@@ -1389,7 +1385,7 @@ mod tests {
             let vendor_headers = get_vendor_headers();
 
             let actual = build_url("44000", "2", Some("ru"), &vendor_headers, &config);
-            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&vad_turnoff=300&language=ru";
+            let expected = "wss://here.lan/listen/stream?endpointing=true&interim_results=true&encoding=linear16&sample_rate=44000&channels=2&language=ru";
 
             assert_eq!(actual.as_str(), expected);
         }
