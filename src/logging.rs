@@ -23,8 +23,14 @@ impl log::Log for Logger {
                 };
 
                 let file = CString::new(record.file().unwrap_or("")).unwrap();
-                let format =
-                    CString::new(format!("[DG :: {}] {}", record.target(), record.args())).unwrap();
+                // Internally, apt_log will use this string as a
+                // printf style format string, so it's important that
+                // we escape `%` characters or else it will try to
+                // substitute values from uninitialized memory.
+                let format = CString::new(
+                    format!("[DG :: {}] {}", record.target(), record.args()).replace("%", "%%"),
+                )
+                .unwrap();
 
                 ffi::apt_log(
                     *RECOG_PLUGIN.get(),
