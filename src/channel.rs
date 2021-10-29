@@ -350,7 +350,7 @@ impl Channel {
             &self.config,
         );
 
-        eprintln!("Building request to {}", url);
+        info!("Building request to {}", url);
 
         let mut req = http::Request::builder().uri(url.as_str());
         if let Some(auth) = auth {
