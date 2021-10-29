@@ -350,7 +350,7 @@ impl Channel {
             &self.config,
         );
 
-        info!("Building request to {}", url);
+        eprintln!("Building request to {}", url);
 
         let mut req = http::Request::builder().uri(url.as_str());
         if let Some(auth) = auth {
@@ -947,7 +947,10 @@ fn build_url(
         // implementaing there if we want to support more
         // multi-valued query params.
         for plugin in plugins.split(',') {
-            url.query_pairs_mut().append_pair("plugin", plugin);
+            let decoded = url::form_urlencoded::parse(plugin.as_bytes())
+                .next()
+                .unwrap();
+            url.query_pairs_mut().append_pair("plugin", &decoded.0);
         }
     }
 
