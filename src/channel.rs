@@ -949,11 +949,8 @@ fn build_url(
         // implementaing there if we want to support more
         // multi-valued query params.
         for plugin in plugins.split(',') {
-            // let decoded = url::form_urlencoded::parse(plugin.as_bytes()).next().unwrap();
-            // eprintln!("Stderr decoded: {:?}", decoded);
-            // info!("info decoded: {:?}", decoded);
-            // url.query_pairs_mut().append_pair("plugin", &decoded.0);
-            url.query_pairs_mut().append_pair("plugin", plugin);
+            let decoded = url::form_urlencoded::parse(plugin.as_bytes()).next().unwrap();
+            url.query_pairs_mut().append_pair("plugin", &decoded.0);
         }
     }
     
