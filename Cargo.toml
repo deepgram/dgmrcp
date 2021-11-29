@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 # Dependencies for building the C library.
 [build-dependencies]
-bindgen = { version = "0.50.0", default-features = false }
+bindgen = { version = "0.59.2", default-features = false }
 
 [dependencies]
 async-tungstenite = { version = "0.10", features = ["tokio-rustls"] }
