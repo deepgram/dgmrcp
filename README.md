@@ -25,9 +25,9 @@ A minimum configuration is as follows:
 ```xml
 <plugin-factory>
   <engine id="Deepgram" name="libdgmrcp" enable="true">
-    <param name="brain_url" value="wss://brain.deepgram.com/v2/"/>
-    <param name="brain_username" value="{{ USERNAME }}"/>
-    <param name="brain_password" value="{{ PASSWORD }}"/>
+    <param name="brain_url" value="wss://api.deepgram.com/v1/"/>
+    <param name="brain_username" value="YOUR_USER_EMAIL"/>
+    <param name="brain_password" value="YOUR_API_KEY"/>
   </engine>
 </plugin-factory>
 ```
@@ -38,9 +38,9 @@ The following options can be specified:
 
 | name | value | description |
 | ---  | ---   | ---
-| brain_url | string (required) | The URL of the Deepgram ASR API. You can set this to `wss://brain.deepgram.com/v2/` to use Deepgram's hosted API, or set it to the URL of your on-prem deployment. Note the trailing slash, which is significant. |
-| brain_username | string | API username or [API key](https://docs.deepgram.com/#api-keys). |
-| brain_password | string | API password or secret. |
+| brain_url | string (required) | The URL of the Deepgram ASR API. You can set this to `wss://api.deepgram.com/v1/` to use Deepgram's hosted API, or set it to the URL of your on-prem deployment. Note the trailing slash, which is significant. |
+| brain_username | string | Your email. |
+| brain_password | string | Your [API key](https://developers.deepgram.com/documentation/getting-started/authentication/#create-an-api-key). |
 | model | string | The default ASR model to use. |
 | language | string | The default ASR language to use. |
 | sensitivity_level | float | The default VAD sensitivity level, between 0.0 and 1.0. |
@@ -77,8 +77,8 @@ passed to the Docker build environment:
 
 ```bash
 $ docker build \
-    --build-arg UNIMRCP_USERNAME=$UNIMRCP_USERNAME \
-    --build-arg $UNIMRCP_PASSWORD=$UNIMRCP_PASSWORD \
+    --build-arg UNIMRCP_USERNAME=your_unimrcp_username \
+    --build-arg UNIMRCP_PASSWORD=your_unimrcp_password \
     -t dgmrcp \
     .
 ```

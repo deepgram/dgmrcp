@@ -336,8 +336,8 @@ impl Channel {
 
         // Build the request
 
-        let auth = match (&self.config.brain_username, &self.config.brain_password) {
-            (Some(username), Some(password)) => Some(format!("{}:{}", username, password)),
+        let auth = match &self.config.brain_password {
+            Some(password) => Some(format!("{}", password)),
             _ => None,
         };
         let sample_rate = unsafe { &(*codec_descriptor).sampling_rate.to_string() };
@@ -355,7 +355,7 @@ impl Channel {
         let mut req = http::Request::builder().uri(url.as_str());
         if let Some(auth) = auth {
             let mut value: http::HeaderValue =
-                format!("Basic {}", base64::encode(auth)).parse().unwrap();
+                format!("Token {}", auth).parse().unwrap();
             value.set_sensitive(true);
             req = req.header("Authorization", value);
         }
@@ -880,7 +880,7 @@ fn build_url(
     vendor_headers: &VendorHeaders,
     config: &Config,
 ) -> url::Url {
-    let mut url = config.brain_url.join("listen/stream").unwrap();
+    let mut url = config.brain_url.join("listen").unwrap();
     // TODO: Perhaps these should not be hardcoded?
     url.query_pairs_mut()
         .append_pair("endpointing", "true")
